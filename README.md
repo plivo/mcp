@@ -34,7 +34,19 @@ cd plivo-mcp
 
 ### 2. Configure Claude Desktop
 
-Create or edit the Claude Desktop `config.json` file (refer to [Claude Setup Guide](https://modelcontextprotocol.io/quickstart/user)):
+Edit the Claude Desktop `config.json` file (refer to [Claude Setup Guide](https://modelcontextprotocol.io/quickstart/user)):
+
+Steps:
+
+Update config.json for Claude Desktop
+
+Open Claude Desktop.
+
+Go to Settings → Developer Tools.
+
+Click on "Open config.json".
+
+In the opened file, update the configuration as needed.
 
 ```json
 {
