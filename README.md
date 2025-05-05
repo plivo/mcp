@@ -99,7 +99,7 @@ To get started with Claude Desktop:
 ### Send SMS
 
 ```text
-Use tool plivo/send_sms with to_number: "+14155551234" and text: "Your appointment is confirmed."
+Use tool plivo/send_sms with from_number: "+14156667777", to_number: "+14155551234" and text: "Your appointment is confirmed."
 ```
 
 ### Make a Call
