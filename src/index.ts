@@ -6,6 +6,7 @@ import {
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createConfirmer } from "./confirm";
+import { handleOAuth, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
 import { parseCredential } from "./upstream";
 
@@ -23,6 +24,10 @@ export interface Env {
   CONFIRMATION_MODE?: string;
   /** Signs confirmation state and codes; at least 32 characters. Set with `wrangler secret put CONFIRM_SECRET`. */
   CONFIRM_SECRET?: string;
+  /** Origin of Plivo's browser login (/v1/accounts/cli/*). Setting it turns on OAuth sign-in for MCP clients. */
+  PLIVO_LOGIN_BASE?: string;
+  /** Signs OAuth client ids, logins and codes; at least 32 characters. Set with `wrangler secret put OAUTH_SECRET`. */
+  OAUTH_SECRET?: string;
 }
 
 function confirmationMode(env: Env): ServerConfig["confirmationMode"] {
@@ -37,31 +42,45 @@ function hostnames(env: Env): string[] {
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /** The base every Authorization header is sent to: https, or http only to this machine. */
-export function apiBaseError(base: string | undefined): string | undefined {
+export function apiBaseError(base: string | undefined, name = "PLIVO_API_BASE"): string | undefined {
   let u: URL;
   try {
     u = new URL(base ?? "");
   } catch {
-    return "PLIVO_API_BASE is not a URL";
+    return `${name} is not a URL`;
   }
-  if (u.hostname.includes("replace-with")) return "PLIVO_API_BASE is still the placeholder";
+  if (u.hostname.includes("replace-with")) return `${name} is still the placeholder`;
   if (u.protocol !== "https:" && !(u.protocol === "http:" && LOCAL_HOSTS.has(u.hostname))) {
-    return "PLIVO_API_BASE must be https";
+    return `${name} must be https`;
   }
   return undefined;
 }
 
-function unauthorized(reason: string): Response {
+function unauthorized(reason: string, challenge: string): Response {
   return new Response(JSON.stringify({ error: "unauthorized", error_description: reason }), {
     status: 401,
-    headers: { "Content-Type": "application/json", "WWW-Authenticate": 'Bearer realm="plivo"' },
+    headers: { "Content-Type": "application/json", "WWW-Authenticate": challenge },
   });
+}
+
+function misconfigured(reason: string): Response {
+  console.error(`plivo-mcp misconfigured: ${reason}`);
+  return new Response("Server misconfigured\n", { status: 500 });
 }
 
 export function createWorker(fetchImpl?: typeof fetch) {
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
+      if (OAUTH_PATHS.has(url.pathname) && env.PLIVO_LOGIN_BASE) {
+        const badHost = hostHeaderValidationResponse(request, hostnames(env));
+        if (badHost) return badHost;
+        const oauthError =
+          apiBaseError(env.PLIVO_LOGIN_BASE, "PLIVO_LOGIN_BASE") ??
+          ((env.OAUTH_SECRET ?? "").length < 32 ? "OAUTH_SECRET must be at least 32 characters" : undefined);
+        if (oauthError) return misconfigured(oauthError);
+        return handleOAuth(request, { secret: env.OAUTH_SECRET!, loginBase: new URL(env.PLIVO_LOGIN_BASE).origin, fetchImpl });
+      }
       if (url.pathname !== "/mcp") {
         return url.pathname === "/"
           ? new Response("Plivo MCP server. Connect an MCP client to /mcp.\n", { headers: { "Content-Type": "text/plain" } })
@@ -80,13 +99,12 @@ export function createWorker(fetchImpl?: typeof fetch) {
         (mode === "allow" && !LOCAL_HOSTS.has(new URL(env.PLIVO_API_BASE).hostname)
           ? "CONFIRMATION_MODE=allow is only for a fake upstream on this machine"
           : undefined);
-      if (configError) {
-        console.error(`plivo-mcp misconfigured: ${configError}`);
-        return new Response("Server misconfigured\n", { status: 500 });
-      }
+      if (configError) return misconfigured(configError);
 
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
-      if ("error" in cred) return unauthorized(cred.error);
+      if ("error" in cred) {
+        return unauthorized(cred.error, env.PLIVO_LOGIN_BASE ? resourceMetadataChallenge(url.origin) : 'Bearer realm="plivo"');
+      }
 
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,

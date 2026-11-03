@@ -5,3 +5,6 @@ ALLOW_BASIC_AUTH=true
 CONFIRMATION_MODE=confirm
 # Any random string of 32+ characters, e.g. from `openssl rand -base64 48`.
 CONFIRM_SECRET=
+# OAuth sign-in against a local auth proxy: set both, or leave PLIVO_LOGIN_BASE empty to keep it off.
+PLIVO_LOGIN_BASE=
+OAUTH_SECRET=

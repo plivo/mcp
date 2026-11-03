@@ -7,6 +7,7 @@ import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
 import { buildRequest } from "../src/upstream";
 import catalogData from "../catalog/catalog.json";
 import { docsSources } from "../src/docs";
+import proxyRoutes from "../catalog/proxy-routes.json";
 
 const STK = "Bearer stk_" + "a".repeat(32);
 const API = "http://127.0.0.1:8799/v1/proxy";
@@ -371,5 +372,10 @@ describe("search_docs", () => {
 
   it("is built from the same docs snapshot as the catalog", () => {
     expect(docsSources.docs_sha256).toBe(catalogData.sources.docs_sha256);
+  });
+
+  it("gives the auth proxy exactly the catalog's routes", () => {
+    const routes = new Map(catalogData.operations.map((o) => [`${o.method} ${o.path}`, o.module]));
+    expect(new Map(proxyRoutes.map((r) => [`${r.method} ${r.path}`, r.module]))).toEqual(routes);
   });
 });

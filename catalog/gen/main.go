@@ -30,6 +30,7 @@ func main() {
 	out := flag.String("out", "catalog/catalog.json", "catalog output")
 	reviewOut := flag.String("review", "catalog/REVIEW.md", "review report output")
 	docsIndexOut := flag.String("docs-index", "catalog/docs.json", "search_docs index output")
+	proxyRoutesOut := flag.String("proxy-routes", "catalog/proxy-routes.json", "the auth proxy's allow-list (its config/mcpProxyRoutes.json)")
 	var sdkPaths multiFlag
 	flag.Var(&sdkPaths, "sdk", "SDK inventory JSON to cross-check param names (repeatable)")
 	dumpDocs := flag.Bool("dump-docs", false, "print parsed docs ops as JSON and exit")
@@ -84,8 +85,30 @@ func main() {
 	idx.Sources.DocsURL, idx.Sources.DocsSHA256 = cat.Sources.DocsURL, cat.Sources.DocsSHA256
 	// Not indented: the index is bundled into the Worker, where every byte counts against its size limit.
 	writeJSON(*docsIndexOut, idx, "")
+	check(os.WriteFile(*proxyRoutesOut, proxyRoutes(cat), 0o644))
 	fmt.Printf("%d operations included, %d excluded, %d docs sections → %s, %s, %s\n",
 		len(cat.Operations), len(cat.Excluded), len(idx.Chunks), *out, *reviewOut, *docsIndexOut)
+}
+
+// proxyRoutes is one line per method and path, so a catalog change reads as a one-line diff where it is copied.
+func proxyRoutes(cat *Catalog) []byte {
+	type route struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Module string `json:"module"`
+	}
+	seen := map[string]bool{}
+	var lines []string
+	for _, op := range cat.Operations {
+		if seen[op.Method+" "+op.Path] {
+			continue
+		}
+		seen[op.Method+" "+op.Path] = true
+		b, err := json.Marshal(route{op.Method, op.Path, op.Module})
+		check(err)
+		lines = append(lines, string(b))
+	}
+	return []byte("[\n" + strings.Join(lines, ",\n") + "\n]\n")
 }
 
 func writeJSON(path string, v any, indent string) {

@@ -12,4 +12,5 @@
     "CONFIRMATION_MODE": "confirm"
   }
   // CONFIRM_SECRET is a secret, not a var: `wrangler secret put CONFIRM_SECRET` (at least 32 characters).
+  // OAuth sign-in turns on with a PLIVO_LOGIN_BASE var (the login host's origin) plus an OAUTH_SECRET secret.
 }
