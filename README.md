@@ -1,115 +1,79 @@
-# Plivo MCP Integration
+# Plivo MCP server
 
-A FastMCP (Model Context Protocol) plugin to interact with [Plivo's API](https://www.plivo.com/) for sending SMS, making calls, creating applications/endpoints, and retrieving call/message details.
+The hosted [Model Context Protocol](https://modelcontextprotocol.io) server for the Plivo API, served at
+`mcp.plivo.com`. Claude, ChatGPT, Cursor and other MCP clients connect to one URL; nothing is installed.
 
-This plugin is compatible with [Claude Desktop](https://modelcontextprotocol.io/quickstart/user) and allows Claude to interact with telephony workflows programmatically.
+It runs as a stateless Cloudflare Worker. It never holds Plivo credentials: each call carries the user's
+scoped `stk_` token to Plivo's auth proxy (`/v1/proxy`), which checks the token's scope and swaps in the account's
+Auth ID and Auth Token.
 
-## 🚀 Features
-
-- **Send SMS** via Plivo
-- **Make Voice Calls** with custom answer/hangup/ring URLs
-- **Create Voice Applications** for call routing
-- **Create SIP Endpoints** for VoIP use
-- **Get Call Detail Records (CDRs)**
-- **Get Message Detail Records (MDRs)**
-
-All capabilities are exposed as MCP tools using the `fastmcp` framework.
-
-## ⚙️ Installation
-
-Install Python dependencies:
-
-```bash
-pip install fastmcp plivo
+```
+MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer stk_──▶ auth proxy /v1/proxy ──Basic──▶ api.plivo.com
 ```
 
-## 📂 Usage with Claude Desktop
+## Tools
 
-### 1. Clone or download this repo
+| Tool | What it does |
+|---|---|
+| `plivo_api_search` | Find operations by intent ("send an SMS", "list calls") |
+| `plivo_api_details` | An operation's params, path params, and whether it costs money |
+| `plivo_api_read` | Call a `GET` operation |
+| `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
+| `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
 
-```bash
-git clone https://github.com/your-org/plivo-mcp.git
-cd plivo-mcp
+Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
+`get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
+catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
+catalog, and the Worker refuses to start if a listed operation or param is missing from it.
+
+## Confirmation
+
+Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
+approval, whichever tool makes them (`src/confirm.ts`). The first call sends nothing and returns
+`confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
+caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
+the same arguments plus the code.
+
+The server trusts the model to actually ask; what it enforces is that only the previewed request is sent, by the
+same caller, while the code is fresh. Being stateless, a code can be reused for that same request until it
+expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
+writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
+
+## The catalog
+
+`catalog/catalog.json` lists every operation the tools can reach. `catalog/gen` builds it from:
+
+- Plivo's docs export (`llms-full.txt`): params, types, required flags, descriptions
+- plivo-cli's source: which endpoints to expose (the CLI's surface) and which spend money (`guardSpend`)
+- `catalog/overrides.json`: reviewed decisions, each with a reason
+
+Each run also writes `catalog/REVIEW.md`: what was included and why, what was excluded, new scope modules
+the auth proxy needs, pricing to confirm, and param names where the docs and the SDKs disagree. The build fails on a
+CLI call site nobody has reviewed or an override that no longer matches an operation.
+
+The same run writes `catalog/docs.json`, the docs split into sections at their `##`/`###` headings, which
+`search_docs` ranks with BM25 (`src/docs.ts`). Building both from one snapshot keeps them in step; a test checks
+that their docs hashes match.
+
+```sh
+curl -sO https://docs.plivo.com/docs/llms-full.txt
+DOCS=$PWD/llms-full.txt PLIVO_CLI=/path/to/plivo-cli npm run catalog
 ```
 
-### 2. Configure Claude Desktop
+## Development
 
-Edit the Claude Desktop `config.json` file (refer to [Claude Setup Guide](https://modelcontextprotocol.io/quickstart/user)):
-
-Steps:
-
-Update config.json for Claude Desktop
-
-Open Claude Desktop.
-
-Go to Settings → Developer Tools.
-
-Click on "Open config.json".
-
-In the opened file, update the configuration as needed.
-
-```json
-{
-  "mcpServers": {
-    "plivo": {
-      "command": "python3",
-      "args": ["/absolute/path/to/plivo_mcp_server.py"],
-      "env": {
-        "PLIVO_AUTH_ID": "your_auth_id",
-        "PLIVO_AUTH_TOKEN": "your_auth_token",
-        "MY_NUMBER": "your_verified_number"
-      }
-    }
-  }
-}
+```sh
+npm install
+npm test                              # Worker, end to end through an MCP client
+(cd catalog/gen && go test ./...)     # generator
+npm run typecheck
 ```
 
-Then launch Claude Desktop and connect to the Plivo MCP server from Claude's tool menu.
+To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.vars`, fill in `CONFIRM_SECRET`, and `npm run dev`, then
+point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
+Basic auth is for local development only; production accepts `stk_` tokens alone.
 
-### 3. Run the MCP Server manually (for debugging)
+## Not built yet
 
-```bash
-python3 plivo_mcp_server.py
-```
-
-### 4. Claude Desktop Setup Steps (from official guide)
-
-To get started with Claude Desktop:
-
-1. Download the Claude Desktop app from the [official site](https://modelcontextprotocol.io/quickstart/user#downloads).
-2. Install and launch the app.
-3. Open your `config.json` file and add the MCP server block as shown above.
-4. In Claude Desktop, open your `config.json` file and modify it as shown in step 3 above.
-5. Enable the server, and Claude will auto-discover tools.
-6. Start chatting and invoke tools like `plivo/send_sms` or `plivo/make_call` using natural language.
-
-## 📝 MCP Tools Provided
-
-| Tool Name            | Description                             |
-|----------------------|-----------------------------------------|
-| `send_sms`           | Send an SMS using Plivo                 |
-| `make_call`          | Make an outbound voice call             |
-| `create_application` | Create a voice app on Plivo             |
-| `create_endpoint`    | Create a SIP endpoint for VoIP          |
-| `get_cdr`            | Get details of a past call (CDR)        |
-| `get_mdr`            | Get details of a past SMS message (MDR) |
-
-## 🔧 Example Prompts for Claude
-
-### Send SMS
-
-```text
-Use tool plivo/send_sms with from_number: "+14156667777", to_number: "+14155551234" and text: "Your appointment is confirmed."
-```
-
-### Make a Call
-
-```text
-Use tool plivo/make_call with from_number: "+14156667777", to_number: "+14155551234", answer_url: "https://example.com/answer.xml", hangup_url: "https://example.com/hangup", ring_url: "https://example.com/ring", machine_detection: "hangup"
-```
-
-### Create an Endpoint
-
-```text
-Use tool plivo/create_endpoint with username: "agent001", password: "securePass123", alias: "Agent SIP", app_id: "APP_ID_HERE"
-```
+- OAuth login, and the auth proxy's `me` account placeholder and catalog-generated `/v1/proxy` allowlist
+- AgentFlow operations: the docs have no pages for them; params will come from the AgentFlow service

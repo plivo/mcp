@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `npm run dev`. Talks to api.plivo.com directly with Basic auth_id:auth_token,
+# because the auth proxy cannot mint SMS/call/number stk_ tokens yet.
+PLIVO_API_BASE=https://api.plivo.com
+ALLOW_BASIC_AUTH=true
+CONFIRMATION_MODE=confirm
+# Any random string of 32+ characters, e.g. from `openssl rand -base64 48`.
+CONFIRM_SECRET=
