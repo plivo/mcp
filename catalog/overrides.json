@@ -15,6 +15,11 @@
     "POST /PhoneNumber/Compliance/": {
       "include": false,
       "reason": "multipart/form-data with document files; an MCP tool call cannot carry files"
-    }
+    },
+    "GET /Subaccount/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
+    "GET /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
+    "POST /Subaccount/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
+    "POST /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
+    "DELETE /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" }
   }
 }

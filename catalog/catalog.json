@@ -568,35 +568,6 @@
       "destructive": true
     },
     {
-      "id": "DELETE /Subaccount/{subauth_id}/",
-      "method": "DELETE",
-      "path": "/v1/Account/{auth_id}/Subaccount/{subauth_id}/",
-      "title": "Delete a Subaccount",
-      "section": "Delete a Subaccount",
-      "description": "Permanently deletes a subaccount.",
-      "group": "account",
-      "docs_url": "https://plivo.com/docs/account/api/subaccount",
-      "path_params": [
-        {
-          "name": "subauth_id",
-          "in": "path",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "params": [
-        {
-          "name": "cascade",
-          "in": "body",
-          "type": "boolean",
-          "description": "If `true`, deletes associated Applications, Endpoints, and Numbers. If `false`, maps them to the main account. Default: `false`."
-        }
-      ],
-      "module": "account.write",
-      "costs_money": false,
-      "destructive": true
-    },
-    {
       "id": "DELETE /Zentrunk/Credential/{credential_uuid}/",
       "method": "DELETE",
       "path": "/v1/Account/{auth_id}/Zentrunk/Credential/{credential_uuid}/",
@@ -2026,55 +1997,6 @@
       ],
       "params": [],
       "module": "call.read",
-      "costs_money": false,
-      "destructive": false
-    },
-    {
-      "id": "GET /Subaccount/",
-      "method": "GET",
-      "path": "/v1/Account/{auth_id}/Subaccount/",
-      "title": "List All Subaccounts",
-      "section": "List All Subaccounts",
-      "description": "Returns all subaccounts sorted by creation date, newest first.",
-      "group": "account",
-      "docs_url": "https://plivo.com/docs/account/api/subaccount",
-      "params": [
-        {
-          "name": "limit",
-          "in": "query",
-          "type": "integer",
-          "description": "Results per page. Maximum 20."
-        },
-        {
-          "name": "offset",
-          "in": "query",
-          "type": "integer",
-          "description": "Pagination offset."
-        }
-      ],
-      "module": "account.read",
-      "costs_money": false,
-      "destructive": false
-    },
-    {
-      "id": "GET /Subaccount/{subauth_id}/",
-      "method": "GET",
-      "path": "/v1/Account/{auth_id}/Subaccount/{subauth_id}/",
-      "title": "Retrieve a Subaccount",
-      "section": "Retrieve a Subaccount",
-      "description": "Get details of a specific subaccount.",
-      "group": "account",
-      "docs_url": "https://plivo.com/docs/account/api/subaccount",
-      "path_params": [
-        {
-          "name": "subauth_id",
-          "in": "path",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "params": [],
-      "module": "account.read",
       "costs_money": false,
       "destructive": false
     },
@@ -5240,70 +5162,6 @@
       "destructive": false
     },
     {
-      "id": "POST /Subaccount/",
-      "method": "POST",
-      "path": "/v1/Account/{auth_id}/Subaccount/",
-      "title": "Create a Subaccount",
-      "section": "Create a Subaccount",
-      "description": "Creates a new subaccount.",
-      "group": "account",
-      "docs_url": "https://plivo.com/docs/account/api/subaccount",
-      "params": [
-        {
-          "name": "name",
-          "in": "body",
-          "type": "string",
-          "required": true,
-          "description": "A human-readable name for the subaccount."
-        },
-        {
-          "name": "enabled",
-          "in": "body",
-          "type": "boolean",
-          "description": "Whether the subaccount should be enabled. Default: `false`."
-        }
-      ],
-      "module": "account.write",
-      "costs_money": false,
-      "destructive": false
-    },
-    {
-      "id": "POST /Subaccount/{subauth_id}/",
-      "method": "POST",
-      "path": "/v1/Account/{auth_id}/Subaccount/{subauth_id}/",
-      "title": "Update a Subaccount",
-      "section": "Update a Subaccount",
-      "description": "Updates a subaccount. Parameters not provided remain unchanged.",
-      "group": "account",
-      "docs_url": "https://plivo.com/docs/account/api/subaccount",
-      "path_params": [
-        {
-          "name": "subauth_id",
-          "in": "path",
-          "type": "string",
-          "required": true
-        }
-      ],
-      "params": [
-        {
-          "name": "name",
-          "in": "body",
-          "type": "string",
-          "required": true,
-          "description": "Name of the subaccount."
-        },
-        {
-          "name": "enabled",
-          "in": "body",
-          "type": "boolean",
-          "description": "Whether the subaccount should be enabled."
-        }
-      ],
-      "module": "account.write",
-      "costs_money": false,
-      "destructive": false
-    },
-    {
       "id": "POST /TollfreeVerification/",
       "method": "POST",
       "path": "/v1/Account/{auth_id}/TollfreeVerification/",
@@ -5959,6 +5817,11 @@
       "reason": "not in the CLI's surface; review before exposing"
     },
     {
+      "id": "DELETE /Subaccount/{subauth_id}/",
+      "title": "Delete a Subaccount",
+      "reason": "override: returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token"
+    },
+    {
       "id": "DELETE /TollfreeVerification/{uuid}/",
       "title": "Delete a Verification Request",
       "reason": "not in the CLI's surface; review before exposing"
@@ -6032,6 +5895,16 @@
       "id": "GET /SipAuth/IpAccessControlList/{ip_acl_uuid}/",
       "title": "Retrieve an IP ACL",
       "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /Subaccount/",
+      "title": "List All Subaccounts",
+      "reason": "override: returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token"
+    },
+    {
+      "id": "GET /Subaccount/{subauth_id}/",
+      "title": "Retrieve a Subaccount",
+      "reason": "override: returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token"
     },
     {
       "id": "GET /Transcription/",
@@ -6177,6 +6050,16 @@
       "id": "POST /SipAuth/IpAccessControlList/{ip_acl_uuid}/Entry/",
       "title": "Add an Entry to an IP ACL",
       "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "POST /Subaccount/",
+      "title": "Create a Subaccount",
+      "reason": "override: returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token"
+    },
+    {
+      "id": "POST /Subaccount/{subauth_id}/",
+      "title": "Update a Subaccount",
+      "reason": "override: returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token"
     },
     {
       "id": "POST /TollfreeVerification/{uuid}/",
