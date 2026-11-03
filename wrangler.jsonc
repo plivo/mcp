@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "plivo-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Production target: Plivo's credential-swapping auth proxy. Set per environment before deploying.
+    "PLIVO_API_BASE": "https://REPLACE-WITH-PROXY-HOST/v1/proxy",
+    "ALLOWED_HOSTS": "mcp.plivo.com",
+    "ALLOW_BASIC_AUTH": "false",
+    "CONFIRMATION_MODE": "confirm"
+  }
+  // CONFIRM_SECRET is a secret, not a var: `wrangler secret put CONFIRM_SECRET` (at least 32 characters).
+}

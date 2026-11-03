@@ -1,0 +1,20 @@
+{
+  "cli_manual": [
+    { "method": "DELETE", "path": "/Conference/{}/", "source": "conference.go:doConferenceDelete" },
+    { "method": "DELETE", "path": "/Conference/{}/Record/", "source": "conference.go:doConferenceDelete" },
+    { "method": "DELETE", "path": "/Call/{}/Stream/", "source": "stream.go:runStreamStop" },
+    { "method": "DELETE", "path": "/Call/{}/Stream/{}/", "source": "stream.go:runStreamStop" },
+    { "method": "GET", "path": "/10dlc/Campaign/{}/Number/", "source": "link.go:runLinkList" },
+    { "method": "GET", "path": "/10dlc/Campaign/{}/Number/{}/", "source": "link.go:runLinkList" }
+  ],
+  "cli_ignore": {
+    "buddy.go:runSupport": "Plivo AI support chat, not the REST API",
+    "login_browser.go:redeemAndPersist": "CLI login token exchange, not the REST API"
+  },
+  "ops": {
+    "POST /PhoneNumber/Compliance/": {
+      "include": false,
+      "reason": "multipart/form-data with document files; an MCP tool call cannot carry files"
+    }
+  }
+}

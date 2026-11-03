@@ -1,0 +1,22 @@
+{
+  "name": "plivo-mcp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "catalog": "cd catalog/gen && go run . -docs \"$DOCS\" -cli \"$PLIVO_CLI\" -overrides ../overrides.json -out ../catalog.json -review ../REVIEW.md -docs-index ../docs.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261015.1",
+    "@modelcontextprotocol/client": "2.3.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.0"
+  }
+}
