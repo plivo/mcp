@@ -5,12 +5,12 @@
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
   "vars": {
-    // Production target: Plivo's credential-swapping auth proxy. Set per environment before deploying.
-    "PLIVO_API_BASE": "https://REPLACE-WITH-PROXY-HOST/v1/proxy",
-    "ALLOWED_HOSTS": "mcp.plivo.com",
+    // The dev auth proxy, for the first end-to-end test. Point both at the production one before launch.
+    "PLIVO_API_BASE": "https://dev-global-auth-api.contactodev.com/v1/proxy",
+    "PLIVO_LOGIN_BASE": "https://dev-global-auth-api.contactodev.com",
+    "ALLOWED_HOSTS": "plivo-mcp.plivops.workers.dev",
     "ALLOW_BASIC_AUTH": "false",
     "CONFIRMATION_MODE": "confirm"
   }
-  // CONFIRM_SECRET is a secret, not a var: `wrangler secret put CONFIRM_SECRET` (at least 32 characters).
-  // OAuth sign-in turns on with a PLIVO_LOGIN_BASE var (the login host's origin) plus an OAUTH_SECRET secret.
+  // CONFIRM_SECRET and OAUTH_SECRET are secrets, not vars: `wrangler secret put <NAME>`, at least 32 characters each.
 }
