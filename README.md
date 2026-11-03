@@ -39,6 +39,25 @@ same caller, while the code is fresh. Being stateless, a code can be reused for 
 expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
 
+## Sign-in
+
+MCP clients sign in with OAuth 2.1, and this Worker is the authorization server. It stores nothing: client ids
+(from dynamic client registration), the login in progress (an HttpOnly cookie) and authorization codes are all
+HMAC-signed with `OAUTH_SECRET`.
+
+```
+MCP client ─/authorize─▶ Worker ─302 client=mcp─▶ Plivo login ─▶ Console consent ─▶ /oauth/callback ─▶ MCP client
+MCP client ─/token (PKCE)─▶ Worker ─/v1/accounts/cli/token (its own PKCE)─▶ auth proxy mints stk_ ─▶ access_token
+```
+
+The token is an `stk_` scope token for 90 days, limited to the catalog's modules and routes; there is no
+refresh token, so a client signs in again when it expires. A 401 from `/mcp` carries
+`WWW-Authenticate: Bearer resource_metadata=…`, which is how clients find the sign-in. Setting
+`PLIVO_LOGIN_BASE` turns this on; `OAUTH_SECRET` must then be at least 32 characters.
+
+`catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
+`npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
+
 ## The catalog
 
 `catalog/catalog.json` lists every operation the tools can reach. `catalog/gen` builds it from:
@@ -75,5 +94,6 @@ Basic auth is for local development only; production accepts `stk_` tokens alone
 
 ## Not built yet
 
-- OAuth login, and the auth proxy's `me` account placeholder and catalog-generated `/v1/proxy` allowlist
+- Client ID Metadata Documents (URL client ids); clients register with dynamic client registration instead
+- The consent screen still reads "Authorize the Plivo CLI"; it names the MCP client only in its device line
 - AgentFlow operations: the docs have no pages for them; params will come from the AgentFlow service
