@@ -8,9 +8,9 @@
     // The dev auth proxy, for the first end-to-end test. Point both at the production one before launch.
     "PLIVO_API_BASE": "https://dev-global-auth-api.contactodev.com/v1/proxy",
     "PLIVO_LOGIN_BASE": "https://dev-global-auth-api.contactodev.com",
-    "ALLOWED_HOSTS": "plivo-mcp.plivops.workers.dev",
     "ALLOW_BASIC_AUTH": "false",
     "CONFIRMATION_MODE": "confirm"
   }
-  // CONFIRM_SECRET and OAUTH_SECRET are secrets, not vars: `wrangler secret put <NAME>`, at least 32 characters each.
+  // Secrets, not vars (`wrangler secret put <NAME>`): CONFIRM_SECRET and OAUTH_SECRET, at least 32 characters each,
+  // and ALLOWED_HOSTS, the hostnames the Worker answers on, kept out of this public repo until launch.
 }
