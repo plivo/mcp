@@ -1,7 +1,48 @@
 import { createRequestStateCodec, type CallToolResult, type RequestStateCodec, type ServerContext } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import type { Operation } from "./catalog";
+import { getOperation, type Operation } from "./catalog";
 import type { BuiltRequest } from "./upstream";
+
+const KEEPS_ACCESS = "This creates or changes a way to place calls on this account, and it keeps working after this app is disconnected.";
+const REROUTES = "This changes where this account's calls or messages are sent.";
+const MOVES_CALL = "This moves a live call somewhere else.";
+const NEW_APP =
+  "This creates an application, which decides where calls and messages go; it can become the default for new numbers and endpoints.";
+
+// Free and undoable, yet they outlive a revoked token or send traffic elsewhere, so a prompt injection could
+// use them for lasting harm.
+const ASKS_FIRST: Readonly<Record<string, string>> = {
+  "POST /Endpoint/": KEEPS_ACCESS,
+  "POST /Endpoint/{endpoint_id}/": KEEPS_ACCESS,
+  "POST /Zentrunk/Credential/": KEEPS_ACCESS,
+  "POST /Zentrunk/Credential/{credential_uuid}/": KEEPS_ACCESS,
+  "POST /Zentrunk/IPAccessControlList/": KEEPS_ACCESS,
+  "POST /Zentrunk/IPAccessControlList/{ipacl_uuid}/": KEEPS_ACCESS,
+  "POST /Zentrunk/Trunk/": KEEPS_ACCESS,
+  "POST /Zentrunk/Trunk/{trunk_id}/": KEEPS_ACCESS,
+  "POST /Zentrunk/URI/": REROUTES,
+  "POST /Zentrunk/URI/{uri_uuid}/": REROUTES,
+  "POST /Application/": NEW_APP,
+  "POST /Application/{app_id}/": REROUTES,
+  "POST /Number/{number}/": REROUTES,
+  "POST /Powerpack/": REROUTES,
+  "POST /Powerpack/{powerpack_uuid}/": REROUTES,
+  "POST /Call/{call_uuid}/": MOVES_CALL,
+};
+
+for (const id of Object.keys(ASKS_FIRST)) {
+  const op = getOperation(id);
+  if (!op || op.method === "GET") throw new Error(`ASKS_FIRST lists ${id}, which is not a write in the catalog`);
+}
+
+/** Why a write needs the user's approval, one sentence per reason; empty when it needs none. */
+export function approvalReasons(op: Operation): string[] {
+  const why: string[] = [];
+  if (op.costs_money) why.push("This costs money.");
+  if (op.destructive) why.push("This cannot be undone.");
+  if (ASKS_FIRST[op.id]) why.push(ASKS_FIRST[op.id]);
+  return why;
+}
 
 /** What the user approves: one exact request (method, URL and body), by digest. */
 interface Pending {
@@ -44,6 +85,8 @@ export async function requestDigest(req: BuiltRequest): Promise<string> {
 const MAX_FIELDS = 12;
 const MAX_VALUE_CHARS = 200;
 const PLAIN_KEY = /^[A-Za-z0-9_.[\]-]+$/;
+// The preview lands in the chat transcript; like the CLI, never print a password back.
+const HIDDEN_FIELD = /password|secret/i;
 
 /**
  * The plain-text description of the action the user is asked to approve. The model controls the argument
@@ -53,9 +96,8 @@ const PLAIN_KEY = /^[A-Za-z0-9_.[\]-]+$/;
 export function describeAction(op: Operation, req: BuiltRequest): string {
   const u = new URL(req.url);
   const path = u.pathname.replace(/^.*\/v1\/Account\/[^/]+/, "") || "/";
-  const lines = [`${op.title} (${op.method} ${path}${u.search})`];
-  if (op.costs_money) lines.push("This costs money.");
-  if (op.destructive) lines.push("This cannot be undone.");
+  const lines = [`${op.title} (${op.method} ${path}${u.search})`, ...approvalReasons(op)];
+  if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
   const rank = new Map(op.params.map((p, i) => [p.name, p.required ? i : op.params.length + i]));
@@ -63,7 +105,9 @@ export function describeAction(op: Operation, req: BuiltRequest): string {
   const names = Object.keys(body).sort((a, b) => (rank.get(a) ?? unranked) - (rank.get(b) ?? unranked) || (a < b ? -1 : a > b ? 1 : 0));
   for (const k of names.slice(0, MAX_FIELDS)) {
     const s = JSON.stringify(body[k]) ?? "null";
-    const shown = s.length > MAX_VALUE_CHARS ? `${s.slice(0, MAX_VALUE_CHARS)}… (${s.length} characters)` : s;
+    const shown = HIDDEN_FIELD.test(k)
+      ? `(hidden, ${typeof body[k] === "string" ? body[k].length : s.length} characters)`
+      : s.length > MAX_VALUE_CHARS ? `${s.slice(0, MAX_VALUE_CHARS)}… (${s.length} characters)` : s;
     lines.push(`${PLAIN_KEY.test(k) ? k : JSON.stringify(k)}${rank.has(k) ? "" : " (not a documented param)"}: ${shown}`);
   }
   if (names.length > MAX_FIELDS) lines.push(`…and ${names.length - MAX_FIELDS} more fields`);
@@ -78,7 +122,7 @@ function textResult(value: unknown, isError = false): CallToolResult {
 }
 
 /**
- * Decides whether a request that costs money or cannot be undone may be sent now. The first call returns a
+ * Decides whether a request that needs approval (see approvalReasons) may be sent now. The first call returns a
  * preview and a code; only a call carrying a fresh code, from the same caller, for this exact request is sent.
  */
 export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operation, req: BuiltRequest, code: string | undefined): Promise<Gate> {

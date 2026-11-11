@@ -8,7 +8,7 @@ import {
 import { createConfirmer } from "./confirm";
 import { handleOAuth, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
-import { parseCredential } from "./upstream";
+import { parseCredential, readCapped } from "./upstream";
 
 export interface Env {
   /** The auth proxy's /v1/proxy base in production; https://api.plivo.com for local development. */
@@ -28,6 +28,8 @@ export interface Env {
   PLIVO_LOGIN_BASE?: string;
   /** Signs OAuth client ids, logins and codes; at least 32 characters. Set with `wrangler secret put OAUTH_SECRET`. */
   OAUTH_SECRET?: string;
+  /** The auth proxy's mcp_client_secret, sent when redeeming a login code; at least 32 characters. A Worker secret. */
+  MCP_CLIENT_SECRET?: string;
 }
 
 function confirmationMode(env: Env): ServerConfig["confirmationMode"] {
@@ -56,11 +58,25 @@ export function apiBaseError(base: string | undefined, name = "PLIVO_API_BASE"):
   return undefined;
 }
 
-function unauthorized(reason: string, challenge: string): Response {
-  return new Response(JSON.stringify({ error: "unauthorized", error_description: reason }), {
+function unauthorized(reason: string, challenge: string, error = "unauthorized"): Response {
+  return new Response(JSON.stringify({ error, error_description: reason }), {
     status: 401,
     headers: { "Content-Type": "application/json", "WWW-Authenticate": challenge },
   });
+}
+
+// The SDK answers 413 past this itself; peeking at a body first must not buffer more than it would.
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
+
+/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
+async function callsTool(request: Request): Promise<boolean> {
+  const text = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
+  try {
+    const body: unknown = JSON.parse(text);
+    return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
+  } catch {
+    return false;
+  }
 }
 
 function misconfigured(reason: string): Response {
@@ -77,9 +93,15 @@ export function createWorker(fetchImpl?: typeof fetch) {
         if (badHost) return badHost;
         const oauthError =
           apiBaseError(env.PLIVO_LOGIN_BASE, "PLIVO_LOGIN_BASE") ??
-          ((env.OAUTH_SECRET ?? "").length < 32 ? "OAUTH_SECRET must be at least 32 characters" : undefined);
+          ((env.OAUTH_SECRET ?? "").length < 32 ? "OAUTH_SECRET must be at least 32 characters" : undefined) ??
+          ((env.MCP_CLIENT_SECRET ?? "").length < 32 ? "MCP_CLIENT_SECRET must be at least 32 characters" : undefined);
         if (oauthError) return misconfigured(oauthError);
-        return handleOAuth(request, { secret: env.OAUTH_SECRET!, loginBase: new URL(env.PLIVO_LOGIN_BASE).origin, fetchImpl });
+        return handleOAuth(request, {
+          secret: env.OAUTH_SECRET!,
+          loginBase: new URL(env.PLIVO_LOGIN_BASE).origin,
+          clientSecret: env.MCP_CLIENT_SECRET!,
+          fetchImpl,
+        });
       }
       if (url.pathname !== "/mcp") {
         return url.pathname === "/"
@@ -101,19 +123,33 @@ export function createWorker(fetchImpl?: typeof fetch) {
           : undefined);
       if (configError) return misconfigured(configError);
 
+      const challenge = (invalidToken = false) =>
+        env.PLIVO_LOGIN_BASE
+          ? resourceMetadataChallenge(url.origin, invalidToken)
+          : `Bearer realm="plivo"${invalidToken ? ', error="invalid_token"' : ""}`;
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
-      if ("error" in cred) {
-        return unauthorized(cred.error, env.PLIVO_LOGIN_BASE ? resourceMetadataChallenge(url.origin) : 'Bearer realm="plivo"');
-      }
+      if ("error" in cred) return unauthorized(cred.error, challenge());
 
+      let tokenRejected = false;
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
         confirmer: mode === "confirm" ? createConfirmer(env.CONFIRM_SECRET!) : undefined,
         fetchImpl,
+        onTokenRejected: () => {
+          tokenRejected = true;
+        },
       };
+      const toolCall = request.method === "POST" && (await callsTool(request));
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
-      return handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
+      const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
+      if (!toolCall) return res;
+      // A streamed reply may still be running the tool, so whether Plivo refused the token is known only once it is read.
+      const body = await res.arrayBuffer();
+      if (tokenRejected) {
+        return unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      }
+      return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },
   };
 }

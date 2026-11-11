@@ -1,7 +1,7 @@
 import { McpServer, type McpRequestContext, type ServerContext } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
+import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
@@ -13,6 +13,8 @@ export interface ServerConfig {
   /** Required when confirmationMode is "confirm". */
   confirmer?: Confirmer;
   fetchImpl?: typeof fetch;
+  /** Called when the auth proxy refuses the caller's token, so the HTTP layer can ask the client to sign in again. */
+  onTokenRejected?: () => void;
 }
 
 const MAX_RESULT_CHARS = 40_000;
@@ -40,6 +42,7 @@ function describe(op: Operation) {
     call_with: op.method === "GET" ? "plivo_api_read" : "plivo_api_write",
     costs_money: op.costs_money,
     destructive: op.destructive,
+    needs_approval: op.method === "GET" ? [] : approvalReasons(op),
     path_params: op.path_params ?? [],
     params: op.params,
     fixed_query: op.fixed_query,
@@ -67,8 +70,9 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         `Common tasks have their own tools: ${shortcuts.map((s) => s.name).join(", ")}. ` +
         "For anything else, find an operation with plivo_api_search, read its params with plivo_api_details, then call it with " +
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
-        "calls, error codes, setup guides), use search_docs. Actions that cost money or cannot be undone " +
-        "need the user's approval; never approve one on the user's behalf.",
+        "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
+        "access to the account or change where calls and messages go need the user's approval; never approve one on " +
+        "the user's behalf.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -78,10 +82,10 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if (!op) return text(`Unknown operation "${args.id}". Use plivo_api_search to find a valid id.`, true);
     if (kind === "read" && op.method !== "GET") return text(`${op.id} changes data; call it with plivo_api_write.`, true);
     if (kind === "write" && op.method === "GET") return text(`${op.id} is read-only; call it with plivo_api_read.`, true);
-    const needsConfirmation = kind === "write" && (op.costs_money || op.destructive);
+    const reasons = kind === "write" ? approvalReasons(op) : [];
+    const needsConfirmation = reasons.length > 0;
     if (needsConfirmation && config.confirmationMode === "block") {
-      const why = op.costs_money ? "costs money" : "cannot be undone";
-      return text(`${op.id} ${why}, and this server is set to refuse such actions. Do it in the Plivo console instead.`, true);
+      return text(`${op.id} needs the user's approval (${reasons.join(" ")}), and this server is set to refuse such actions. Do it in the Plivo console instead.`, true);
     }
     if (!caller) return text("This request has no Plivo credentials.", true);
 
@@ -100,6 +104,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
       return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
     }
+    if (res.tokenRejected) config.onTokenRejected?.();
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;
@@ -178,7 +183,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       title: "Call a Plivo API operation that changes data",
       description:
         "Call a POST, PATCH or DELETE operation from the catalog. Operations that cost money (sending messages, " +
-        "making calls, buying numbers) or cannot be undone need the user's approval first.",
+        "making calls, buying numbers), cannot be undone, create SIP access or reroute calls and messages need the " +
+        "user's approval first; plivo_api_details lists the reasons as needs_approval.",
       inputSchema: writeInput,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },

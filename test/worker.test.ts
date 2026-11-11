@@ -12,6 +12,7 @@ import proxyRoutes from "../catalog/proxy-routes.json";
 const STK = "Bearer stk_" + "a".repeat(32);
 const API = "http://127.0.0.1:8799/v1/proxy";
 const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
+const SIP_PASSWORD = "x".repeat(10);
 
 interface Sent {
   url: string;
@@ -20,12 +21,15 @@ interface Sent {
   body: unknown;
 }
 
-function setup(envOverrides: Partial<Env> = {}, reply = { status: 200, body: { api_id: "x", ok: true } as unknown }) {
+function setup(
+  envOverrides: Partial<Env> = {},
+  reply: { status: number; body: unknown; headers?: Record<string, string> } = { status: 200, body: { api_id: "x", ok: true } },
+) {
   const sent: Sent[] = [];
   const upstream = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     sent.push({ url: String(url), method: init?.method ?? "GET", auth: headers.get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { "Content-Type": "application/json", ...reply.headers } });
   });
   const worker = createWorker(upstream as typeof fetch);
   const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, ...envOverrides };
@@ -176,6 +180,8 @@ describe("guardrails", () => {
     expect(send.isError).toBe(true);
     expect(send.raw).toContain("costs money");
     expect((await call(client, "plivo_api_write", { id: "DELETE /Call/{call_uuid}/", path_params: { call_uuid: "c1" } })).isError).toBe(true);
+    const trunk = await call(client, "plivo_api_write", { id: "POST /Zentrunk/IPAccessControlList/", params: { name: "x", ip_addresses: ["203.0.113.7"] } });
+    expect(trunk.raw).toContain("keeps working after this app is disconnected");
     expect(sent).toHaveLength(0);
   });
 
@@ -193,6 +199,54 @@ describe("guardrails", () => {
     const client = await connect(toWorker, basic);
     await call(client, "plivo_api_read", { id: "GET /Call/?status=live" });
     expect(sent[0]).toMatchObject({ url: "https://api.plivo.test/v1/Account/MAXXXXXXXXXXXXXXXXXX/Call/?status=live", auth: basic });
+  });
+
+  it.each<[string, { pin: "2026-07-28" } | undefined]>([
+    ["2025 client", undefined],
+    ["2026-07-28 client", { pin: "2026-07-28" }],
+  ])("%s: a token Plivo refuses gets an HTTP 401 that starts sign-in again", async (_, mode) => {
+    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+    const { toWorker } = setup(oauth, {
+      status: 401,
+      body: { error: { global_error: "Token is expired" } },
+      headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' },
+    });
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    const client = await connect(recording, STK, mode);
+    await expect(client.callTool({ name: "plivo_api_read", arguments: { id: "GET /Call/" } })).rejects.toThrow();
+    const last = replies.at(-1)!;
+    expect(last.status).toBe(401);
+    expect(last.headers.get("WWW-Authenticate")).toBe('Bearer error="invalid_token", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
+    expect(await last.json()).toMatchObject({ error: "invalid_token" });
+  });
+
+  it("keeps a 401 from Plivo behind a valid token a tool error, so the client is not sent round a sign-in loop", async () => {
+    const { toWorker } = setup({}, { status: 401, body: { error: "Authentication credentials invalid" } });
+    const client = await connect(toWorker);
+    const res = await call(client, "plivo_api_read", { id: "GET /Call/" });
+    expect(res.isError).toBe(true);
+    expect(res.parsed).toMatchObject({ status: 401 });
+  });
+
+  it("reads no more of an oversized body than the SDK's 4 MiB limit before refusing it", async () => {
+    const { worker, env } = setup();
+    const chunk = new Uint8Array(64 * 1024).fill(0x78);
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (pulled >= 64 * 1024 * 1024) return c.close();
+        pulled += chunk.byteLength;
+        c.enqueue(chunk);
+      },
+    });
+    const req = new Request("http://localhost/mcp", { method: "POST", headers: { Authorization: STK, "Content-Type": "application/json" }, body: endless, duplex: "half" } as RequestInit);
+    expect((await worker.fetch(withHost(req), env)).status).toBe(413);
+    expect(pulled).toBeLessThan(6 * 1024 * 1024);
   });
 
   it("marks an upstream error status as a tool error", async () => {
@@ -327,6 +381,43 @@ describe("confirmation", () => {
       vi.useRealTimers();
     }
     expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ["POST /Zentrunk/Credential/", { params: { username: "sipuser1", password: SIP_PASSWORD } }, "keeps working after this app is disconnected"],
+    ["POST /Number/{number}/", { path_params: { number: "14155550134" }, params: { app_id: "12345" } }, "changes where this account's calls or messages are sent"],
+    ["POST /Call/{call_uuid}/", { path_params: { call_uuid: "c1" }, params: { legs: "aleg", aleg_url: "https://example.com/x" } }, "moves a live call"],
+    ["POST /Application/", { params: { app_name: "a1", answer_url: "https://example.com/a", default_number_app: true } }, "default for new numbers and endpoints"],
+  ])("%s is free but asks first, and says why", async (id, args, why) => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const preview = (await call(client, "plivo_api_write", { id, ...args })).parsed as { status: string; action: string; confirmation_code: string };
+    expect(preview.status).toBe("confirmation_required");
+    expect(preview.action).toContain(why);
+    expect(sent).toHaveLength(0);
+    await call(client, "plivo_api_write", { id, ...args, confirmation_code: preview.confirmation_code });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("never shows a password in the preview", async () => {
+    const { toWorker } = setup();
+    const client = await connect(toWorker);
+    const res = await call(client, "plivo_api_write", { id: "POST /Zentrunk/Credential/", params: { username: "sipuser1", password: SIP_PASSWORD } });
+    const action = (res.parsed as { action: string }).action;
+    expect(action).not.toContain(SIP_PASSWORD);
+    expect(action).toContain("password: (hidden, 10 characters)");
+    expect(action).toContain("delete it in the Plivo console");
+  });
+
+  it("sends other free writes without asking, and lists the reasons in details", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const dtmf = await call(client, "plivo_api_write", { id: "POST /Call/{call_uuid}/DTMF/", path_params: { call_uuid: "c1" }, params: { digits: "1" } });
+    expect(dtmf.isError).toBe(false);
+    expect(sent).toHaveLength(1);
+    const details = (id: string) => call(client, "plivo_api_details", { id }).then((r) => (r.parsed as { needs_approval: string[] }).needs_approval);
+    expect(await details("POST /Call/{call_uuid}/DTMF/")).toEqual([]);
+    expect(await details("POST /Application/{app_id}/")).toEqual(["This changes where this account's calls or messages are sent."]);
   });
 
   it("shows required params first and escapes values, whatever the model sends", () => {

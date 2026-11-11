@@ -1,7 +1,7 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorker, type Env } from "../src/index";
-import { redirectUriError } from "../src/oauth";
+import { consentLabel, redirectUriError } from "../src/oauth";
 
 const ORIGIN = "http://localhost";
 const LOGIN = "http://127.0.0.1:8798";
@@ -12,6 +12,7 @@ const ENV: Env = {
   CONFIRM_SECRET: "test-confirm-secret-".padEnd(48, "x"),
   PLIVO_LOGIN_BASE: LOGIN,
   OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"),
+  MCP_CLIENT_SECRET: "test-mcp-client-secret-".padEnd(48, "z"),
 };
 
 async function s256(v: string) {
@@ -25,8 +26,11 @@ function fakeLogin() {
   const redeemed: unknown[] = [];
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url) !== `${LOGIN}/v1/accounts/cli/token`) return new Response("{}", { status: 404 });
-    const body = JSON.parse(String(init?.body)) as { state: string; code: string; code_verifier: string };
+    const body = JSON.parse(String(init?.body)) as { state: string; code: string; code_verifier: string; client_secret?: string };
     redeemed.push(body);
+    if (body.client_secret !== ENV.MCP_CLIENT_SECRET) {
+      return new Response(JSON.stringify({ errors: { global_error: "client authentication failed" } }), { status: 401 });
+    }
     const entry = codes.get(body.code);
     codes.delete(body.code);
     if (!entry || entry.state !== body.state || (await s256(body.code_verifier)) !== entry.challenge) {
@@ -105,7 +109,7 @@ describe("OAuth sign-in", () => {
     const { clientId, verifier, toLogin, back, code } = await signIn(t);
 
     expect(`${toLogin.origin}${toLogin.pathname}`).toBe(`${LOGIN}/v1/accounts/cli/authorize`);
-    expect(Object.fromEntries(toLogin.searchParams)).toMatchObject({ client: "mcp", code_challenge_method: "S256", device: "Test Client (127.0.0.1:9999)" });
+    expect(Object.fromEntries(toLogin.searchParams)).toMatchObject({ client: "mcp", code_challenge_method: "S256", device: "127.0.0.1:9999 (Test Client)" });
     expect(`${location(back).origin}${location(back).pathname}`).toBe(CLIENT_CB);
     expect(location(back).searchParams.get("state")).toBe("client-state");
 
@@ -200,8 +204,47 @@ describe("OAuth sign-in", () => {
     }
   });
 
+  it("refuses a redirect host too long to show in full on the consent screen", () => {
+    const host = `${"a".repeat(60)}.${"b".repeat(27)}.example.com`;
+    expect(redirectUriError(`https://${host}/cb`)).toBeUndefined();
+    expect(redirectUriError(`https://x${host}/cb`)).toBe("has a host longer than 100 characters");
+  });
+
   it("is off without PLIVO_LOGIN_BASE, and refuses to run with a short secret", async () => {
     expect((await setup({ PLIVO_LOGIN_BASE: undefined }).send("/.well-known/oauth-authorization-server")).status).toBe(404);
     expect((await setup({ OAUTH_SECRET: "short" }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
+    expect((await setup({ MCP_CLIENT_SECRET: undefined }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
+  });
+});
+
+describe("consent screen label", () => {
+  it("shows the full redirect host first, however the client pads its name", async () => {
+    const t = setup();
+    const evilCb = "https://claude.ai.connect-callback.evil-example.com/cb";
+    const reg = await t.send("/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [evilCb], client_name: "Claude" + "\u200B".repeat(94) }),
+    });
+    const { client_id, client_name } = (await reg.json()) as { client_id: string; client_name: string };
+    expect(client_name).toBe("Claude");
+    const q = new URLSearchParams({ response_type: "code", client_id, redirect_uri: evilCb, code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" });
+    expect(location(await t.send(`/authorize?${q}`)).searchParams.get("device")).toBe("claude.ai.connect-callback.evil-example.com (Claude)");
+  });
+
+  it.each([
+    ["drops controls, bidi overrides and zero-width fillers", "Cl\u202Eau\u0007de\u3164 \u200D App", "https://claude.ai/cb", "claude.ai (Claude App)"],
+    ["uses the host alone when no name is left", "\u200B\u200C\u2060", "http://127.0.0.1:33418/", "127.0.0.1:33418"],
+    ["names an app redirect by its scheme's host", "Cursor", "cursor://anysphere.cursor-retrieval/oauth/callback", "anysphere.cursor-retrieval (Cursor)"],
+  ])("%s", (_, name, uri, label) => {
+    expect(consentLabel(name, uri)).toBe(label);
+  });
+
+  it("shortens only the name to fit the auth proxy's 128-character limit", () => {
+    const host = `${"a".repeat(60)}.${"b".repeat(27)}.example.com`;
+    const label = consentLabel("N".repeat(100), `https://${host}/cb`);
+    expect([...label]).toHaveLength(128);
+    expect(label.startsWith(`${host} (N`)).toBe(true);
+    expect(label.endsWith("N…)")).toBe(true);
   });
 });
