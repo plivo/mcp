@@ -12,6 +12,7 @@ import proxyRoutes from "../catalog/proxy-routes.json";
 const STK = "Bearer stk_" + "a".repeat(32);
 const API = "http://127.0.0.1:8799/v1/proxy";
 const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
+const SIP_PASSWORD = "x".repeat(10);
 
 interface Sent {
   url: string;
@@ -176,6 +177,8 @@ describe("guardrails", () => {
     expect(send.isError).toBe(true);
     expect(send.raw).toContain("costs money");
     expect((await call(client, "plivo_api_write", { id: "DELETE /Call/{call_uuid}/", path_params: { call_uuid: "c1" } })).isError).toBe(true);
+    const trunk = await call(client, "plivo_api_write", { id: "POST /Zentrunk/IPAccessControlList/", params: { name: "x", ip_addresses: ["203.0.113.7"] } });
+    expect(trunk.raw).toContain("keeps working after this app is disconnected");
     expect(sent).toHaveLength(0);
   });
 
@@ -347,6 +350,42 @@ describe("confirmation", () => {
       vi.useRealTimers();
     }
     expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ["POST /Zentrunk/Credential/", { params: { username: "sipuser1", password: SIP_PASSWORD } }, "keeps working after this app is disconnected"],
+    ["POST /Number/{number}/", { path_params: { number: "14155550134" }, params: { app_id: "12345" } }, "changes where this account's calls or messages are sent"],
+    ["POST /Call/{call_uuid}/", { path_params: { call_uuid: "c1" }, params: { legs: "aleg", aleg_url: "https://example.com/x" } }, "moves a live call"],
+  ])("%s is free but asks first, and says why", async (id, args, why) => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const preview = (await call(client, "plivo_api_write", { id, ...args })).parsed as { status: string; action: string; confirmation_code: string };
+    expect(preview.status).toBe("confirmation_required");
+    expect(preview.action).toContain(why);
+    expect(sent).toHaveLength(0);
+    await call(client, "plivo_api_write", { id, ...args, confirmation_code: preview.confirmation_code });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("never shows a password in the preview", async () => {
+    const { toWorker } = setup();
+    const client = await connect(toWorker);
+    const res = await call(client, "plivo_api_write", { id: "POST /Zentrunk/Credential/", params: { username: "sipuser1", password: SIP_PASSWORD } });
+    const action = (res.parsed as { action: string }).action;
+    expect(action).not.toContain(SIP_PASSWORD);
+    expect(action).toContain("password: (hidden, 10 characters)");
+    expect(action).toContain("delete it in the Plivo console");
+  });
+
+  it("sends other free writes without asking, and lists the reasons in details", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const created = await call(client, "plivo_api_write", { id: "POST /Application/", params: { app_name: "a1", answer_url: "https://example.com/a" } });
+    expect(created.isError).toBe(false);
+    expect(sent).toHaveLength(1);
+    const details = (id: string) => call(client, "plivo_api_details", { id }).then((r) => (r.parsed as { needs_approval: string[] }).needs_approval);
+    expect(await details("POST /Application/")).toEqual([]);
+    expect(await details("POST /Application/{app_id}/")).toEqual(["This changes where this account's calls or messages are sent."]);
   });
 
   it("shows required params first and escapes values, whatever the model sends", () => {

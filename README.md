@@ -29,7 +29,10 @@ catalog, and the Worker refuses to start if a listed operation or param is missi
 ## Confirmation
 
 Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
-approval, whichever tool makes them (`src/confirm.ts`). The first call sends nothing and returns
+approval, whichever tool makes them (`src/confirm.ts`). So do 15 free writes that keep working after the token
+is revoked or send traffic elsewhere: SIP endpoints, credentials, IP lists and trunks, origination URIs,
+pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
+`src/confirm.ts`). The preview hides any field named like a password or secret. The first call sends nothing and returns
 `confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
 caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
 the same arguments plus the code.
