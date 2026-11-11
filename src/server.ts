@@ -13,6 +13,8 @@ export interface ServerConfig {
   /** Required when confirmationMode is "confirm". */
   confirmer?: Confirmer;
   fetchImpl?: typeof fetch;
+  /** Called when Plivo refuses the caller's token, so the HTTP layer can ask the client to sign in again. */
+  onTokenRejected?: () => void;
 }
 
 const MAX_RESULT_CHARS = 40_000;
@@ -100,6 +102,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
       return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
     }
+    if (res.status === 401) config.onTokenRejected?.();
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;

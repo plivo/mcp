@@ -195,6 +195,26 @@ describe("guardrails", () => {
     expect(sent[0]).toMatchObject({ url: "https://api.plivo.test/v1/Account/MAXXXXXXXXXXXXXXXXXX/Call/?status=live", auth: basic });
   });
 
+  it.each<[string, { pin: "2026-07-28" } | undefined]>([
+    ["2025 client", undefined],
+    ["2026-07-28 client", { pin: "2026-07-28" }],
+  ])("%s: a token Plivo refuses gets an HTTP 401 that starts sign-in again", async (_, mode) => {
+    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+    const { toWorker } = setup(oauth, { status: 401, body: { error: { global_error: "Token is expired" } } });
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    const client = await connect(recording, STK, mode);
+    await expect(client.callTool({ name: "plivo_api_read", arguments: { id: "GET /Call/" } })).rejects.toThrow();
+    const last = replies.at(-1)!;
+    expect(last.status).toBe(401);
+    expect(last.headers.get("WWW-Authenticate")).toBe('Bearer error="invalid_token", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
+    expect(await last.json()).toMatchObject({ error: "invalid_token" });
+  });
+
   it("marks an upstream error status as a tool error", async () => {
     const { toWorker } = setup({}, { status: 404, body: { error: "not found" } });
     const client = await connect(toWorker);

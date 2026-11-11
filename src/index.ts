@@ -56,11 +56,21 @@ export function apiBaseError(base: string | undefined, name = "PLIVO_API_BASE"):
   return undefined;
 }
 
-function unauthorized(reason: string, challenge: string): Response {
-  return new Response(JSON.stringify({ error: "unauthorized", error_description: reason }), {
+function unauthorized(reason: string, challenge: string, error = "unauthorized"): Response {
+  return new Response(JSON.stringify({ error, error_description: reason }), {
     status: 401,
     headers: { "Content-Type": "application/json", "WWW-Authenticate": challenge },
   });
+}
+
+/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
+async function callsTool(request: Request): Promise<boolean> {
+  try {
+    const body: unknown = JSON.parse(await request.clone().text());
+    return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
+  } catch {
+    return false;
+  }
 }
 
 function misconfigured(reason: string): Response {
@@ -101,19 +111,33 @@ export function createWorker(fetchImpl?: typeof fetch) {
           : undefined);
       if (configError) return misconfigured(configError);
 
+      const challenge = (invalidToken = false) =>
+        env.PLIVO_LOGIN_BASE
+          ? resourceMetadataChallenge(url.origin, invalidToken)
+          : `Bearer realm="plivo"${invalidToken ? ', error="invalid_token"' : ""}`;
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
-      if ("error" in cred) {
-        return unauthorized(cred.error, env.PLIVO_LOGIN_BASE ? resourceMetadataChallenge(url.origin) : 'Bearer realm="plivo"');
-      }
+      if ("error" in cred) return unauthorized(cred.error, challenge());
 
+      let tokenRejected = false;
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
         confirmer: mode === "confirm" ? createConfirmer(env.CONFIRM_SECRET!) : undefined,
         fetchImpl,
+        onTokenRejected: () => {
+          tokenRejected = true;
+        },
       };
+      const toolCall = request.method === "POST" && (await callsTool(request));
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
-      return handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
+      const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
+      if (!toolCall) return res;
+      // A streamed reply may still be running the tool, so whether Plivo refused the token is known only once it is read.
+      const body = await res.arrayBuffer();
+      if (tokenRejected) {
+        return unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      }
+      return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },
   };
 }
