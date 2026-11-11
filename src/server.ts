@@ -104,7 +104,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
       return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
     }
-    if (res.status === 401) config.onTokenRejected?.();
+    if (res.tokenRejected) config.onTokenRejected?.();
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;

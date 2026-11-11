@@ -8,7 +8,7 @@ import {
 import { createConfirmer } from "./confirm";
 import { handleOAuth, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
-import { parseCredential } from "./upstream";
+import { parseCredential, readCapped } from "./upstream";
 
 export interface Env {
   /** The auth proxy's /v1/proxy base in production; https://api.plivo.com for local development. */
@@ -65,10 +65,16 @@ function unauthorized(reason: string, challenge: string, error = "unauthorized")
   });
 }
 
-/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
-async function callsTool(request: Request): Promise<boolean> {
+// The SDK refuses a larger body itself; peeking at one first must not buffer more than that.
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
+
+/** Whether a JSON-RPC body (one message or a batch) calls a tool, the only requests that reach Plivo; "too large" past the SDK's limit. */
+async function callsTool(request: Request): Promise<boolean | "too large"> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_REQUEST_BYTES) return "too large";
+  const { text, more } = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
+  if (more) return "too large";
   try {
-    const body: unknown = JSON.parse(await request.clone().text());
+    const body: unknown = JSON.parse(text);
     return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
   } catch {
     return false;
@@ -137,6 +143,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
         },
       };
       const toolCall = request.method === "POST" && (await callsTool(request));
+      if (toolCall === "too large") return new Response("Payload Too Large\n", { status: 413 });
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;

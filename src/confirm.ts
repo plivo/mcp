@@ -6,6 +6,8 @@ import type { BuiltRequest } from "./upstream";
 const KEEPS_ACCESS = "This creates or changes a way to place calls on this account, and it keeps working after this app is disconnected.";
 const REROUTES = "This changes where this account's calls or messages are sent.";
 const MOVES_CALL = "This moves a live call somewhere else.";
+const NEW_APP =
+  "This creates an application, which decides where calls and messages go; it can become the default for new numbers and endpoints.";
 
 // Free and undoable, yet they outlive a revoked token or send traffic elsewhere, so a prompt injection could
 // use them for lasting harm.
@@ -20,6 +22,7 @@ const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Zentrunk/Trunk/{trunk_id}/": KEEPS_ACCESS,
   "POST /Zentrunk/URI/": REROUTES,
   "POST /Zentrunk/URI/{uri_uuid}/": REROUTES,
+  "POST /Application/": NEW_APP,
   "POST /Application/{app_id}/": REROUTES,
   "POST /Number/{number}/": REROUTES,
   "POST /Powerpack/": REROUTES,

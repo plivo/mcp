@@ -29,9 +29,9 @@ catalog, and the Worker refuses to start if a listed operation or param is missi
 ## Confirmation
 
 Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
-approval, whichever tool makes them (`src/confirm.ts`). So do 15 free writes that keep working after the token
+approval, whichever tool makes them (`src/confirm.ts`). So do 16 free writes that keep working after the token
 is revoked or send traffic elsewhere: SIP endpoints, credentials, IP lists and trunks, origination URIs,
-pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
+creating an application, pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
 `src/confirm.ts`). The preview hides any field named like a password or secret. The first call sends nothing and returns
 `confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
 caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
@@ -59,8 +59,9 @@ refresh token, so a client signs in again when it expires. A 401 from `/mcp` car
 `PLIVO_LOGIN_BASE` turns this on; `OAUTH_SECRET` must then be at least 32 characters.
 
 Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth proxy's `mcp_client_secret`
-(32+ characters), so only this Worker can turn an MCP login into a token. When Plivo refuses a token that expired
-or was revoked, the tool call gets HTTP 401 with `error="invalid_token"`, and the client signs in again.
+(32+ characters), so only this Worker can turn an MCP login into a token. When the auth proxy refuses a token that
+expired or was revoked (its 401 says `error="invalid_token"`), the tool call gets the same HTTP 401, and the client signs
+in again. A 401 from Plivo for a valid token stays a tool error, so it cannot cause a sign-in loop.
 
 `catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
 `npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
