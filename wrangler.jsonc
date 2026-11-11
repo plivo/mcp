@@ -11,6 +11,7 @@
     "ALLOW_BASIC_AUTH": "false",
     "CONFIRMATION_MODE": "confirm"
   }
-  // Secrets, not vars (`wrangler secret put <NAME>`): CONFIRM_SECRET and OAUTH_SECRET, at least 32 characters each,
+  // Secrets, not vars (`wrangler secret put <NAME>`): CONFIRM_SECRET, OAUTH_SECRET and MCP_CLIENT_SECRET (the auth
+  // proxy's mcp_client_secret), at least 32 characters each,
   // and ALLOWED_HOSTS, the hostnames the Worker answers on, kept out of this public repo until launch.
 }

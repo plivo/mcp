@@ -58,6 +58,10 @@ refresh token, so a client signs in again when it expires. A 401 from `/mcp` car
 `WWW-Authenticate: Bearer resource_metadata=…`, which is how clients find the sign-in. Setting
 `PLIVO_LOGIN_BASE` turns this on; `OAUTH_SECRET` must then be at least 32 characters.
 
+Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth proxy's `mcp_client_secret`
+(32+ characters), so only this Worker can turn an MCP login into a token. When Plivo refuses a token that expired
+or was revoked, the tool call gets HTTP 401 with `error="invalid_token"`, and the client signs in again.
+
 `catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
 `npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
 

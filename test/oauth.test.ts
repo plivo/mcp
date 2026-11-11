@@ -12,6 +12,7 @@ const ENV: Env = {
   CONFIRM_SECRET: "test-confirm-secret-".padEnd(48, "x"),
   PLIVO_LOGIN_BASE: LOGIN,
   OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"),
+  MCP_CLIENT_SECRET: "test-mcp-client-secret-".padEnd(48, "z"),
 };
 
 async function s256(v: string) {
@@ -25,8 +26,11 @@ function fakeLogin() {
   const redeemed: unknown[] = [];
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url) !== `${LOGIN}/v1/accounts/cli/token`) return new Response("{}", { status: 404 });
-    const body = JSON.parse(String(init?.body)) as { state: string; code: string; code_verifier: string };
+    const body = JSON.parse(String(init?.body)) as { state: string; code: string; code_verifier: string; client_secret?: string };
     redeemed.push(body);
+    if (body.client_secret !== ENV.MCP_CLIENT_SECRET) {
+      return new Response(JSON.stringify({ errors: { global_error: "client authentication failed" } }), { status: 401 });
+    }
     const entry = codes.get(body.code);
     codes.delete(body.code);
     if (!entry || entry.state !== body.state || (await s256(body.code_verifier)) !== entry.challenge) {
@@ -209,6 +213,7 @@ describe("OAuth sign-in", () => {
   it("is off without PLIVO_LOGIN_BASE, and refuses to run with a short secret", async () => {
     expect((await setup({ PLIVO_LOGIN_BASE: undefined }).send("/.well-known/oauth-authorization-server")).status).toBe(404);
     expect((await setup({ OAUTH_SECRET: "short" }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
+    expect((await setup({ MCP_CLIENT_SECRET: undefined }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
   });
 });
 

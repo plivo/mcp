@@ -28,6 +28,8 @@ export interface Env {
   PLIVO_LOGIN_BASE?: string;
   /** Signs OAuth client ids, logins and codes; at least 32 characters. Set with `wrangler secret put OAUTH_SECRET`. */
   OAUTH_SECRET?: string;
+  /** The auth proxy's mcp_client_secret, sent when redeeming a login code; at least 32 characters. A Worker secret. */
+  MCP_CLIENT_SECRET?: string;
 }
 
 function confirmationMode(env: Env): ServerConfig["confirmationMode"] {
@@ -87,9 +89,15 @@ export function createWorker(fetchImpl?: typeof fetch) {
         if (badHost) return badHost;
         const oauthError =
           apiBaseError(env.PLIVO_LOGIN_BASE, "PLIVO_LOGIN_BASE") ??
-          ((env.OAUTH_SECRET ?? "").length < 32 ? "OAUTH_SECRET must be at least 32 characters" : undefined);
+          ((env.OAUTH_SECRET ?? "").length < 32 ? "OAUTH_SECRET must be at least 32 characters" : undefined) ??
+          ((env.MCP_CLIENT_SECRET ?? "").length < 32 ? "MCP_CLIENT_SECRET must be at least 32 characters" : undefined);
         if (oauthError) return misconfigured(oauthError);
-        return handleOAuth(request, { secret: env.OAUTH_SECRET!, loginBase: new URL(env.PLIVO_LOGIN_BASE).origin, fetchImpl });
+        return handleOAuth(request, {
+          secret: env.OAUTH_SECRET!,
+          loginBase: new URL(env.PLIVO_LOGIN_BASE).origin,
+          clientSecret: env.MCP_CLIENT_SECRET!,
+          fetchImpl,
+        });
       }
       if (url.pathname !== "/mcp") {
         return url.pathname === "/"

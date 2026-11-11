@@ -5,6 +5,8 @@
 export interface OAuthConfig {
   secret: string;
   loginBase: string;
+  /** Proves to the auth proxy that this server, and no one else, is redeeming an MCP login code. */
+  clientSecret: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -300,7 +302,12 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
     res = await (cfg.fetchImpl ?? fetch)(`${cfg.loginBase}/v1/accounts/cli/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state: code.login_state, code: code.login_code, code_verifier: await loginVerifier(cfg.secret, code.login_state) }),
+      body: JSON.stringify({
+        state: code.login_state,
+        code: code.login_code,
+        code_verifier: await loginVerifier(cfg.secret, code.login_state),
+        client_secret: cfg.clientSecret,
+      }),
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
     });
