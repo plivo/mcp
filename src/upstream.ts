@@ -112,6 +112,8 @@ export interface UpstreamResult {
   status: number;
   ok: boolean;
   body: unknown;
+  /** The auth proxy refused the caller's token itself (not a 401 from Plivo behind it). */
+  tokenRejected?: boolean;
 }
 
 const TIMEOUT_MS = 25_000;
@@ -136,20 +138,23 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     await res.body?.cancel();
     return { status: res.status, ok: false, body: { error: "upstream redirected; not followed" } };
   }
-  const text = await readCapped(res, MAX_BODY_BYTES);
+  const text = await readCapped(res.body, MAX_BODY_BYTES);
   let body: unknown = text;
   try {
     body = JSON.parse(text);
   } catch {
     // Non-JSON bodies (rare error pages, or a clipped body) are returned as text.
   }
-  return { status: res.status, ok: res.ok, body };
+  // The proxy marks its own token refusals; Plivo's 401 for the account behind a valid token must not
+  // send the client into a sign-in loop.
+  const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
+  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}) };
 }
 
-/** Reads at most max bytes of the body, so an oversized response cannot exhaust the Worker's memory. */
-async function readCapped(res: Response, max: number): Promise<string> {
-  if (!res.body) return "";
-  const reader = res.body.getReader();
+/** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */
+export async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number): Promise<string> {
+  if (!stream) return "";
+  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   while (size < max) {
@@ -158,7 +163,8 @@ async function readCapped(res: Response, max: number): Promise<string> {
     chunks.push(value);
     size += value.byteLength;
   }
-  if (size >= max) await reader.cancel();
+  // Not awaited: on a cloned request's body the cancel settles only once the other branch is read too.
+  if (size >= max) reader.cancel().catch(() => {});
   const all = new Uint8Array(Math.min(size, max));
   let at = 0;
   for (const c of chunks) {

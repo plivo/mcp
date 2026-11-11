@@ -5,6 +5,8 @@
 export interface OAuthConfig {
   secret: string;
   loginBase: string;
+  /** Proves to the auth proxy that this server, and no one else, is redeeming an MCP login code. */
+  clientSecret: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -23,6 +25,10 @@ const LOGIN_TTL_SECONDS = 600;
 const CODE_TTL_SECONDS = 60;
 const MAX_REDIRECT_URIS = 5;
 const MAX_FIELD_CHARS = 512;
+const MAX_NAME_CHARS = 100;
+// The auth proxy refuses a longer consent-screen label, so the host must leave room for part of the name.
+const MAX_LABEL_CHARS = 128;
+const MAX_SHOWN_HOST_CHARS = 100;
 const MAX_BODY_CHARS = 16_384;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const BLOCKED_SCHEMES = new Set(["javascript:", "data:", "vbscript:", "file:", "blob:", "about:"]);
@@ -133,7 +139,29 @@ export function redirectUriError(uri: unknown): string | undefined {
   if (url.hash) return "must not have a fragment";
   if (BLOCKED_SCHEMES.has(url.protocol)) return `cannot use ${url.protocol}`;
   if (url.protocol === "http:" && !LOOPBACK.has(url.hostname)) return "may use http only for a loopback address";
+  if ([...shownHost(url)].length > MAX_SHOWN_HOST_CHARS) return `has a host longer than ${MAX_SHOWN_HOST_CHARS} characters`;
   return undefined;
+}
+
+const shownHost = (url: URL) => url.host || url.protocol;
+
+/** A self-declared client name without the invisible characters that could pad it or reorder what is shown. */
+function cleanName(name: unknown): string {
+  if (typeof name !== "string") return "";
+  const clean = name.replace(/[\p{C}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/gu, " ").trim();
+  return [...clean].slice(0, MAX_NAME_CHARS).join("");
+}
+
+/**
+ * The consent screen's name for the app. The client chooses its own name, so the host the token is sent to
+ * comes first and is never shortened; only the name is cut to fit.
+ */
+export function consentLabel(clientName: string | undefined, redirectUri: string): string {
+  const host = shownHost(new URL(redirectUri));
+  const name = [...cleanName(clientName)];
+  if (name.length === 0) return host;
+  const room = MAX_LABEL_CHARS - [...host].length - 3;
+  return `${host} (${name.length <= room ? name.join("") : `${name.slice(0, room - 1).join("")}…`})`;
 }
 
 function loginCookieName(origin: URL) {
@@ -154,9 +182,9 @@ function loginCookie(origin: URL, value: string, maxAge: number): string {
   return `${loginCookieName(origin)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
-/** The WWW-Authenticate value that tells an MCP client where to start OAuth. */
-export function resourceMetadataChallenge(origin: string): string {
-  return `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
+/** The WWW-Authenticate value that tells an MCP client where to start OAuth; error="invalid_token" for a token that stopped working. */
+export function resourceMetadataChallenge(origin: string, invalidToken = false): string {
+  return `Bearer ${invalidToken ? 'error="invalid_token", ' : ""}resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
 }
 
 async function readBody(request: Request): Promise<string | undefined> {
@@ -179,7 +207,7 @@ async function register(request: Request, cfg: OAuthConfig): Promise<Response> {
     const why = redirectUriError(u);
     if (why) return oauthError("invalid_redirect_uri", `${String(u).slice(0, 100)} ${why}`);
   }
-  const name = typeof body.client_name === "string" ? body.client_name.trim().slice(0, 100) : undefined;
+  const name = cleanName(body.client_name) || undefined;
   const client: Client = { id: b64url(crypto.getRandomValues(new Uint8Array(16))), redirect_uris: uris as string[], ...(name ? { client_name: name } : {}) };
   return json(
     {
@@ -218,8 +246,7 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
 
   const loginState = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const login: Login = { client_id: clientId, redirect_uri: redirectUri, state, code_challenge: challenge, login_state: loginState, exp: now() + LOGIN_TTL_SECONDS };
-  // The client's name is self-declared, so the consent screen also names where the token will go.
-  const device = `${client.client_name ?? "An MCP client"} (${new URL(redirectUri).host || new URL(redirectUri).protocol})`.slice(0, 128);
+  const device = consentLabel(client.client_name, redirectUri);
   return redirectTo(
     `${cfg.loginBase}/v1/accounts/cli/authorize`,
     {
@@ -275,7 +302,12 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
     res = await (cfg.fetchImpl ?? fetch)(`${cfg.loginBase}/v1/accounts/cli/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state: code.login_state, code: code.login_code, code_verifier: await loginVerifier(cfg.secret, code.login_state) }),
+      body: JSON.stringify({
+        state: code.login_state,
+        code: code.login_code,
+        code_verifier: await loginVerifier(cfg.secret, code.login_state),
+        client_secret: cfg.clientSecret,
+      }),
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
     });
