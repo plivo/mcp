@@ -13,7 +13,7 @@ export interface ServerConfig {
   /** Required when confirmationMode is "confirm". */
   confirmer?: Confirmer;
   fetchImpl?: typeof fetch;
-  /** Called when Plivo refuses the caller's token, so the HTTP layer can ask the client to sign in again. */
+  /** Called when the auth proxy refuses the caller's token, so the HTTP layer can ask the client to sign in again. */
   onTokenRejected?: () => void;
 }
 
