@@ -53,7 +53,7 @@ MCP client ─/authorize─▶ Worker ─302 client=mcp─▶ Plivo login ─▶
 MCP client ─/token (PKCE)─▶ Worker ─/v1/accounts/cli/token (its own PKCE)─▶ auth proxy mints stk_ ─▶ access_token
 ```
 
-The token is an `stk_` scope token for 90 days, limited to the catalog's modules and routes; there is no
+The token is an `stk_` scope token for 30 days, limited to the catalog's modules and routes; there is no
 refresh token, so a client signs in again when it expires. A 401 from `/mcp` carries
 `WWW-Authenticate: Bearer resource_metadata=…`, which is how clients find the sign-in. Setting
 `PLIVO_LOGIN_BASE` turns this on; `OAUTH_SECRET` must then be at least 32 characters.

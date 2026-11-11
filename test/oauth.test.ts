@@ -36,7 +36,7 @@ function fakeLogin() {
     if (!entry || entry.state !== body.state || (await s256(body.code_verifier)) !== entry.challenge) {
       return new Response(JSON.stringify({ errors: { global_error: "code not found or expired" } }), { status: 400 });
     }
-    return Response.json({ data: { access_token: STK, expires_at: new Date(Date.now() + 90 * 86_400_000).toISOString() } });
+    return Response.json({ data: { access_token: STK, expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString() } });
   });
   return { codes, redeemed, fetchImpl };
 }
@@ -117,7 +117,7 @@ describe("OAuth sign-in", () => {
     expect(res.status).toBe(200);
     const tok = (await res.json()) as { access_token: string; token_type: string; expires_in: number };
     expect(tok).toMatchObject({ access_token: STK, token_type: "Bearer" });
-    expect(tok.expires_in).toBeGreaterThan(89 * 86_400);
+    expect(tok.expires_in).toBeGreaterThan(29 * 86_400);
 
     const transport = new StreamableHTTPClientTransport(new URL(`${ORIGIN}/mcp`), {
       fetch: (input, init) => t.send(new URL(String(input)).pathname, init),
