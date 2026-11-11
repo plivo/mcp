@@ -65,14 +65,12 @@ function unauthorized(reason: string, challenge: string, error = "unauthorized")
   });
 }
 
-// The SDK refuses a larger body itself; peeking at one first must not buffer more than that.
+// The SDK answers 413 past this itself; peeking at a body first must not buffer more than it would.
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
-/** Whether a JSON-RPC body (one message or a batch) calls a tool, the only requests that reach Plivo; "too large" past the SDK's limit. */
-async function callsTool(request: Request): Promise<boolean | "too large"> {
-  if (Number(request.headers.get("Content-Length") ?? 0) > MAX_REQUEST_BYTES) return "too large";
-  const { text, more } = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
-  if (more) return "too large";
+/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
+async function callsTool(request: Request): Promise<boolean> {
+  const text = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
   try {
     const body: unknown = JSON.parse(text);
     return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
@@ -143,7 +141,6 @@ export function createWorker(fetchImpl?: typeof fetch) {
         },
       };
       const toolCall = request.method === "POST" && (await callsTool(request));
-      if (toolCall === "too large") return new Response("Payload Too Large\n", { status: 413 });
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;

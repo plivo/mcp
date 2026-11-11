@@ -233,15 +233,20 @@ describe("guardrails", () => {
     expect(res.parsed).toMatchObject({ status: 401 });
   });
 
-  it("refuses a body over the SDK's 4 MiB limit before reading all of it", async () => {
+  it("reads no more of an oversized body than the SDK's 4 MiB limit before refusing it", async () => {
     const { worker, env } = setup();
-    const big = "x".repeat(4 * 1024 * 1024 + 1);
-    const asText = new Request("http://localhost/mcp", { method: "POST", headers: { Authorization: STK, "Content-Type": "application/json" }, body: big });
-    expect((await worker.fetch(withHost(asText), env)).status).toBe(413);
-    const stream = new ReadableStream({ start: (c) => { c.enqueue(new TextEncoder().encode(big)); c.close(); } });
-    const streamed = new Request("http://localhost/mcp", { method: "POST", headers: { Authorization: STK, "Content-Type": "application/json" }, body: stream, duplex: "half" } as RequestInit);
-    expect(streamed.headers.get("Content-Length")).toBeNull();
-    expect((await worker.fetch(withHost(streamed), env)).status).toBe(413);
+    const chunk = new Uint8Array(64 * 1024).fill(0x78);
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (pulled >= 64 * 1024 * 1024) return c.close();
+        pulled += chunk.byteLength;
+        c.enqueue(chunk);
+      },
+    });
+    const req = new Request("http://localhost/mcp", { method: "POST", headers: { Authorization: STK, "Content-Type": "application/json" }, body: endless, duplex: "half" } as RequestInit);
+    expect((await worker.fetch(withHost(req), env)).status).toBe(413);
+    expect(pulled).toBeLessThan(6 * 1024 * 1024);
   });
 
   it("marks an upstream error status as a tool error", async () => {

@@ -138,7 +138,7 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     await res.body?.cancel();
     return { status: res.status, ok: false, body: { error: "upstream redirected; not followed" } };
   }
-  const { text } = await readCapped(res.body, MAX_BODY_BYTES);
+  const text = await readCapped(res.body, MAX_BODY_BYTES);
   let body: unknown = text;
   try {
     body = JSON.parse(text);
@@ -151,19 +151,20 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}) };
 }
 
-/** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory; `more` says it was cut. */
-export async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number): Promise<{ text: string; more: boolean }> {
-  if (!stream) return { text: "", more: false };
+/** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */
+export async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number): Promise<string> {
+  if (!stream) return "";
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  while (size <= max) {
+  while (size < max) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
     size += value.byteLength;
   }
-  if (size > max) await reader.cancel();
+  // Not awaited: on a cloned request's body the cancel settles only once the other branch is read too.
+  if (size >= max) reader.cancel().catch(() => {});
   const all = new Uint8Array(Math.min(size, max));
   let at = 0;
   for (const c of chunks) {
@@ -172,5 +173,5 @@ export async function readCapped(stream: ReadableStream<Uint8Array> | null, max:
     at += take;
     if (at >= all.byteLength) break;
   }
-  return { text: new TextDecoder().decode(all), more: size > max };
+  return new TextDecoder().decode(all);
 }
