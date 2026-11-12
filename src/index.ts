@@ -13,8 +13,13 @@ import { parseCredential, readCapped } from "./upstream";
 export interface Env {
   /** The auth proxy's /v1/proxy base in production; https://api.plivo.com for local development. */
   PLIVO_API_BASE: string;
-  /** Comma-separated hostnames this Worker answers on, e.g. "mcp.plivo.com". Localhost is always allowed. */
+  /** Comma-separated Host header values this Worker accepts, e.g. its workers.dev name. Localhost is always allowed. */
   ALLOWED_HOSTS?: string;
+  /**
+   * The origin clients reach this Worker at, e.g. "https://mcp.plivo.com", when a proxy in front of it forwards the
+   * Worker's own Host. Sign-in metadata, the issuer and 401 challenges use it; it defaults to the request's origin.
+   */
+  PUBLIC_ORIGIN?: string;
   /** "true" accepts Basic auth_id:auth_token; local development only, never in production. */
   ALLOW_BASIC_AUTH?: string;
   /**
@@ -79,6 +84,14 @@ async function callsTool(request: Request): Promise<boolean> {
   }
 }
 
+function publicOriginError(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const why = apiBaseError(value, "PUBLIC_ORIGIN");
+  if (why) return why;
+  const u = new URL(value);
+  return u.pathname !== "/" || u.search || u.hash ? "PUBLIC_ORIGIN must be an origin like https://mcp.plivo.com, with no path" : undefined;
+}
+
 function misconfigured(reason: string): Response {
   console.error(`plivo-mcp misconfigured: ${reason}`);
   return new Response("Server misconfigured\n", { status: 500 });
@@ -88,6 +101,9 @@ export function createWorker(fetchImpl?: typeof fetch) {
   return {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
+      const originError = publicOriginError(env.PUBLIC_ORIGIN);
+      if (originError) return misconfigured(originError);
+      const publicOrigin = env.PUBLIC_ORIGIN ? new URL(env.PUBLIC_ORIGIN).origin : url.origin;
       if (OAUTH_PATHS.has(url.pathname) && env.PLIVO_LOGIN_BASE) {
         const badHost = hostHeaderValidationResponse(request, hostnames(env));
         if (badHost) return badHost;
@@ -100,6 +116,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
           secret: env.OAUTH_SECRET!,
           loginBase: new URL(env.PLIVO_LOGIN_BASE).origin,
           clientSecret: env.MCP_CLIENT_SECRET!,
+          publicOrigin,
           fetchImpl,
         });
       }
@@ -125,7 +142,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
 
       const challenge = (invalidToken = false) =>
         env.PLIVO_LOGIN_BASE
-          ? resourceMetadataChallenge(url.origin, invalidToken)
+          ? resourceMetadataChallenge(publicOrigin, invalidToken)
           : `Bearer realm="plivo"${invalidToken ? ', error="invalid_token"' : ""}`;
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
       if ("error" in cred) return unauthorized(cred.error, challenge());

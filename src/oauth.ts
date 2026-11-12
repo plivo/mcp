@@ -7,6 +7,8 @@ export interface OAuthConfig {
   loginBase: string;
   /** Proves to the auth proxy that this server, and no one else, is redeeming an MCP login code. */
   clientSecret: string;
+  /** Where clients reach this server; it names itself with this in metadata, the issuer and the login cookie. */
+  publicOrigin: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -328,8 +330,8 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
 }
 
 export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<Response> {
-  const origin = new URL(request.url);
-  const path = origin.pathname;
+  const origin = new URL(cfg.publicOrigin);
+  const path = new URL(request.url).pathname;
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...CORS, "Access-Control-Allow-Methods": "GET, POST" } });
 
   if (request.method === "GET" && path.startsWith("/.well-known/oauth-protected-resource")) {

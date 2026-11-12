@@ -63,6 +63,10 @@ Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth
 expired or was revoked (its 401 says `error="invalid_token"`), the tool call gets the same HTTP 401, and the client signs
 in again. A 401 from Plivo for a valid token stays a tool error, so it cannot cause a sign-in loop.
 
+Behind a proxy that forwards the Worker's own Host (CloudFront in front of the workers.dev name), set `PUBLIC_ORIGIN`
+to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
+cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<PUBLIC_ORIGIN>/oauth/callback`.
+
 `catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
 `npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
 
