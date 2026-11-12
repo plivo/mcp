@@ -13,5 +13,6 @@
   }
   // Secrets, not vars (`wrangler secret put <NAME>`): CONFIRM_SECRET, OAUTH_SECRET and MCP_CLIENT_SECRET (the auth
   // proxy's mcp_client_secret), at least 32 characters each,
-  // and ALLOWED_HOSTS, the hostnames the Worker answers on, kept out of this public repo until launch.
+  // and ALLOWED_HOSTS (the Host values the Worker accepts) and PUBLIC_ORIGIN (the origin clients use when a proxy
+  // forwards the Worker's own Host), kept out of this public repo until launch.
 }
