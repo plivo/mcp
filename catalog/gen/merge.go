@@ -59,6 +59,19 @@ type Overrides struct {
 	} `json:"cli_manual"`
 	CLIIgnore map[string]string     `json:"cli_ignore"`
 	Ops       map[string]OpOverride `json:"ops"`
+	ExtraOps  []ExtraOp             `json:"extra_ops"`
+}
+
+// ExtraOp is an operation the CLI calls that the docs do not describe, written from the CLI's
+// commands and the server's validation. It then goes through the same rules as a docs op.
+type ExtraOp struct {
+	Method      string  `json:"method"`
+	Path        string  `json:"path"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Group       string  `json:"group"`
+	Source      string  `json:"source"`
+	Params      []Param `json:"params"`
 }
 
 type OpOverride struct {
@@ -246,6 +259,20 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 
 	best, dups := pickBest(docOps)
 	rv.Duplicates = dups
+	extra := map[string]ExtraOp{}
+	for _, e := range ov.ExtraOps {
+		rel, _ := relPath(apiHost, accountPrefix+e.Path)
+		id := opID(e.Method, rel, nil)
+		if _, documented := best[id]; documented {
+			return nil, nil, fmt.Errorf("extra op %s is now in the docs; remove it from extra_ops", id)
+		}
+		if _, dup := extra[id]; dup || e.Title == "" || e.Source == "" {
+			return nil, nil, fmt.Errorf("extra op %s is listed twice or has no title or source", id)
+		}
+		extra[id] = e
+		best[id] = DocOp{Method: e.Method, Host: apiHost, Path: accountPrefix + rel, Title: e.Title, Section: e.Title,
+			Description: e.Description, Params: e.Params}
+	}
 	usedOverride := map[string]bool{}
 	coveredCLI := map[*CLIUse]bool{}
 	cat := &Catalog{Schema: 1}
@@ -272,6 +299,10 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 			Destructive: d.Method == "DELETE",
 		}
 		op.PathParams, op.Params = splitPathParams(rel, d.Params)
+		e, isExtra := extra[id]
+		if isExtra {
+			op.Group = e.Group
+		}
 		if routable {
 			op.Module = moduleFor(d.Method, rel)
 		}
@@ -331,6 +362,12 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 			return nil, nil, fmt.Errorf("%s cannot be included: it is not routable through /v1/proxy or has no consent module", id)
 		}
 
+		if isExtra {
+			if !include {
+				return nil, nil, fmt.Errorf("extra op %s would be excluded (%s); only CLI calls belong in extra_ops", id, reason)
+			}
+			reason += "; not in the docs, written from " + e.Source
+		}
 		if !include {
 			cat.Excluded = append(cat.Excluded, Excluded{ID: id, Title: d.Title, Reason: reason})
 			rv.Excluded = append(rv.Excluded, Excluded{ID: id, Title: d.Title, Reason: reason})

@@ -388,6 +388,10 @@ describe("confirmation", () => {
     ["POST /Number/{number}/", { path_params: { number: "14155550134" }, params: { app_id: "12345" } }, "changes where this account's calls or messages are sent"],
     ["POST /Call/{call_uuid}/", { path_params: { call_uuid: "c1" }, params: { legs: "aleg", aleg_url: "https://example.com/x" } }, "moves a live call"],
     ["POST /Application/", { params: { app_name: "a1", answer_url: "https://example.com/a", default_number_app: true } }, "default for new numbers and endpoints"],
+    ["POST /AgentFlow/", { params: { name: "Order status" } }, "creates an AI agent"],
+    ["POST /AgentFlow/{agent_id}/", { path_params: { agent_id: "a1" }, params: { name: "Renamed" } }, "changes an AI agent"],
+    ["POST /AgentFlow/{agent_id}/Publish/", { path_params: { agent_id: "a1" } }, "puts an AI agent live"],
+    ["POST /AgentFlow/{agent_id}/Pause/", { path_params: { agent_id: "a1" } }, "stops a live AI agent"],
   ])("%s is free but asks first, and says why", async (id, args, why) => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);

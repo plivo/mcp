@@ -8,9 +8,13 @@ const REROUTES = "This changes where this account's calls or messages are sent."
 const MOVES_CALL = "This moves a live call somewhere else.";
 const NEW_APP =
   "This creates an application, which decides where calls and messages go; it can become the default for new numbers and endpoints.";
+const NEW_AGENT = "This creates an AI agent on this account.";
+const CHANGES_AGENT = "This changes an AI agent, which may be live on calls and messages.";
+const AGENT_LIVE = "This puts an AI agent live on calls and messages.";
+const AGENT_STOPS = "This stops a live AI agent from handling calls and messages.";
 
-// Free and undoable, yet they outlive a revoked token or send traffic elsewhere, so a prompt injection could
-// use them for lasting harm.
+// Free and undoable, yet they outlive a revoked token, send traffic elsewhere or change what an AI agent does
+// on live traffic, so a prompt injection could use them for lasting harm.
 const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Endpoint/": KEEPS_ACCESS,
   "POST /Endpoint/{endpoint_id}/": KEEPS_ACCESS,
@@ -28,6 +32,11 @@ const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Powerpack/": REROUTES,
   "POST /Powerpack/{powerpack_uuid}/": REROUTES,
   "POST /Call/{call_uuid}/": MOVES_CALL,
+  "POST /AgentFlow/": NEW_AGENT,
+  "POST /AgentFlow/{agent_id}/": CHANGES_AGENT,
+  "POST /AgentFlow/{agent_id}/Publish/": AGENT_LIVE,
+  "POST /AgentFlow/{agent_id}/Resume/": AGENT_LIVE,
+  "POST /AgentFlow/{agent_id}/Pause/": AGENT_STOPS,
 };
 
 for (const id of Object.keys(ASKS_FIRST)) {
