@@ -2,6 +2,7 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
 import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
+import { diagnose, diagnoseTools } from "./diagnose";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
@@ -70,9 +71,9 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         `Common tasks have their own tools: ${shortcuts.map((s) => s.name).join(", ")}. ` +
         "For anything else, find an operation with plivo_api_search, read its params with plivo_api_details, then call it with " +
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
-        "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
-        "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
-        "never approve one on the user's behalf.",
+        "calls, error codes, setup guides), use search_docs. To find out why a call or message failed, use diagnose_call or " +
+        "diagnose_message. Actions that cost money, cannot be undone, give lasting access to the account, change where " +
+        "calls and messages go or change a live AI agent need the user's approval; never approve one on the user's behalf.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -196,6 +197,17 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       s.name,
       { title: s.op.title, description: s.description, inputSchema: s.inputSchema, annotations: s.annotations },
       async (args, reqCtx) => call(s.kind, s.toCall(args), reqCtx),
+    );
+  }
+
+  for (const d of diagnoseTools) {
+    server.registerTool(
+      d.name,
+      { title: d.title, description: d.description, inputSchema: d.inputSchema, annotations: { readOnlyHint: true, openWorldHint: true } },
+      async (args: Record<string, string>) => {
+        const res = await diagnose(d.kind, Object.values(args)[0], caller, config);
+        return text(res.value, res.isError);
+      },
     );
   }
 

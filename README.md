@@ -20,11 +20,18 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `plivo_api_read` | Call a `GET` operation |
 | `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
+| `diagnose_call` | Ask Plivo's support assistant what happened on a call, from traces the API does not expose |
+| `diagnose_message` | Ask Plivo's support assistant why a message failed or what its status means |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
 `get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
 catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
 catalog, and the Worker refuses to start if a listed operation or param is missing from it.
+
+The diagnose tools first check that the call or message is on the account, then send only its id to the auth proxy,
+which asks Plivo's support assistant a fixed question and streams the answer back (30 seconds to 2 minutes for a
+call). The assistant is told not to file a support ticket or change the account; the result says if it tried
+(`src/diagnose.ts`). They need the auth proxy, so they refuse Basic auth.
 
 ## Confirmation
 
