@@ -45,6 +45,8 @@ type Anomaly struct {
 var (
 	pageSourceRe = regexp.MustCompile(`^Source: (\S+)`)
 	endpointRe   = regexp.MustCompile("^`?(GET|POST|PUT|PATCH|DELETE) (https://[^\\s`]+)`?\\s*$")
+	bareURLRe    = regexp.MustCompile("^(https://[^\\s`]+)$")
+	httpMethods  = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}
 	paramLineRe  = regexp.MustCompile("^\\*\\*(.+?)\\*\\*\\s+`([^`]+)`(.*)$")
 	boldOnlyRe   = regexp.MustCompile(`^\*\*([^*]+)\*\*\s*$`)
 	defaultRe    = regexp.MustCompile(`\(default:\s*([^)]*)\)`)
@@ -142,7 +144,7 @@ func ParseDocs(src string) ([]DocOp, []Anomaly) {
 	// inSample holds under Example/Sample/Response headings, where a fenced METHOD URL shows a request
 	// rather than declaring an op; treating it as one would steal the params that follow.
 	inSample := false
-	inFence, fenceLang := false, ""
+	inFence, fenceLang, fenceMethod := false, "", ""
 	wantDesc := ""
 
 	anomaly := func(i int, s string) { anomalies = append(anomalies, Anomaly{i + 1, page, s}) }
@@ -193,9 +195,14 @@ func ParseDocs(src string) ([]DocOp, []Anomaly) {
 
 		if strings.HasPrefix(t, "```") {
 			if !inFence {
-				inFence, fenceLang = true, ""
-				if f := strings.Fields(strings.TrimPrefix(t, "```")); len(f) > 0 {
+				inFence, fenceLang, fenceMethod = true, "", ""
+				f := strings.Fields(strings.TrimPrefix(t, "```"))
+				if len(f) > 0 {
 					fenceLang = f[0]
+				}
+				// The Number Pool page writes "```text POST" and puts the bare URL inside.
+				if len(f) > 1 && httpMethods[f[1]] {
+					fenceMethod = f[1]
 				}
 			} else {
 				inFence = false
@@ -208,6 +215,8 @@ func ParseDocs(src string) ([]DocOp, []Anomaly) {
 			if fenceLang != "json" && !inSample {
 				if m := endpointRe.FindStringSubmatch(t); m != nil {
 					startOp(i, m[1], m[2])
+				} else if m := bareURLRe.FindStringSubmatch(t); m != nil && fenceMethod != "" {
+					startOp(i, fenceMethod, m[1])
 				}
 			}
 			continue

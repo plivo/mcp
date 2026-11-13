@@ -517,6 +517,41 @@
       "destructive": true
     },
     {
+      "id": "DELETE /NumberPool/{number_pool_uuid}/Number/{number}/",
+      "method": "DELETE",
+      "path": "/v1/Account/{auth_id}/NumberPool/{number_pool_uuid}/Number/{number}/",
+      "title": "Remove a Number",
+      "section": "Numbers",
+      "description": "Remove a number from a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.",
+      "group": "messaging",
+      "docs_url": "https://plivo.com/docs/messaging/api/numberpool",
+      "path_params": [
+        {
+          "name": "number_pool_uuid",
+          "in": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "number",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "unrent",
+          "in": "body",
+          "type": "boolean",
+          "description": "Set to `true` to also unrent the number. Defaults to `false`."
+        }
+      ],
+      "module": "message.write",
+      "costs_money": false,
+      "destructive": true
+    },
+    {
       "id": "DELETE /PhoneNumber/Compliance/{compliance_id}/",
       "method": "DELETE",
       "path": "/v1/Account/{auth_id}/PhoneNumber/Compliance/{compliance_id}/",
@@ -1328,6 +1363,29 @@
       "destructive": false
     },
     {
+      "id": "GET /CnamLookup/{number}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/CnamLookup/{number}/",
+      "title": "Look Up a Caller Name (CNAM)",
+      "section": "Look Up a Caller Name (CNAM)",
+      "description": "Get the caller-ID name (CNAM) registered for a US or Canadian number: caller_name, caller_type and the charge. Billed per lookup.",
+      "group": "numbers",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "number",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The US or Canadian phone number to look up."
+        }
+      ],
+      "params": [],
+      "module": "number.read",
+      "costs_money": true,
+      "destructive": false
+    },
+    {
       "id": "GET /Conference/",
       "method": "GET",
       "path": "/v1/Account/{auth_id}/Conference/",
@@ -1817,6 +1875,65 @@
       ],
       "params": [],
       "module": "number.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Number/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/NumberPool/{number_pool_uuid}/Number/",
+      "title": "List All Numbers",
+      "section": "Numbers",
+      "description": "List the numbers in a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.",
+      "group": "messaging",
+      "docs_url": "https://plivo.com/docs/messaging/api/numberpool",
+      "path_params": [
+        {
+          "name": "number_pool_uuid",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "starts_with",
+          "in": "query",
+          "type": "string",
+          "description": "A comma-separated list of prefixes. Values provided should exclude the country code prefix. A maximum of 10 prefixes may be specified."
+        },
+        {
+          "name": "type",
+          "in": "query",
+          "type": "string",
+          "description": "Filter by number type: `fixed`, `toll-free`, or `mobile`. Note that local and national numbers should be considered as `fixed`."
+        },
+        {
+          "name": "service",
+          "in": "query",
+          "type": "string",
+          "description": "Filter by capability: `sms` or `mms`."
+        },
+        {
+          "name": "country_iso2",
+          "in": "query",
+          "type": "string",
+          "description": "ISO2 code of the phone number country. Required if the `starts_with` filter is specified."
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "integer",
+          "description": "Number of results per page. Maximum is 20. Defaults to 20."
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "integer",
+          "description": "Number of value items by which the results should be offset. Defaults to 0."
+        }
+      ],
+      "module": "message.read",
       "costs_money": false,
       "destructive": false
     },
@@ -2845,6 +2962,35 @@
       "params": [],
       "module": "sip.read",
       "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET lookup.plivo.com/v1/Number/{PhoneNumber}",
+      "method": "GET",
+      "path": "/v1/Lookup/Number/{PhoneNumber}",
+      "title": "Look Up a Phone Number",
+      "section": "Look Up a Phone Number",
+      "description": "Retrieve carrier and formatting information for a phone number.",
+      "group": "lookup",
+      "docs_url": "https://plivo.com/docs/lookup/overview",
+      "path_params": [
+        {
+          "name": "PhoneNumber",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "type",
+          "in": "query",
+          "type": "string",
+          "description": "Set to `carrier` to retrieve carrier information"
+        }
+      ],
+      "module": "number.read",
+      "costs_money": true,
       "destructive": false
     },
     {
@@ -5335,6 +5481,41 @@
       "destructive": false
     },
     {
+      "id": "POST /NumberPool/{number_pool_uuid}/Number/{number}/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/NumberPool/{number_pool_uuid}/Number/{number}/",
+      "title": "Add a Number",
+      "section": "Numbers",
+      "description": "Add an SMS- or MMS-enabled number to a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.",
+      "group": "messaging",
+      "docs_url": "https://plivo.com/docs/messaging/api/numberpool",
+      "path_params": [
+        {
+          "name": "number_pool_uuid",
+          "in": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "number",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "service",
+          "in": "body",
+          "type": "string",
+          "description": "Set this parameter to `sms` for SMS-enabled numbers or `mms` for MMS-enabled numbers. Defaults to `sms`."
+        }
+      ],
+      "module": "message.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
       "id": "POST /PhoneNumber/Compliance/Link/",
       "method": "POST",
       "path": "/v1/Account/{auth_id}/PhoneNumber/Compliance/Link/",
@@ -6162,6 +6343,16 @@
       "reason": "not in the CLI's surface; review before exposing"
     },
     {
+      "id": "DELETE /NumberPool/{number_pool_uuid}/Shortcode/{shortcode}/",
+      "title": "Remove a Shortcode",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "DELETE /NumberPool/{number_pool_uuid}/Tollfree/{tollfree_number}/",
+      "title": "Remove a Toll-Free Number",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
       "id": "DELETE /Profile/{profile_uuid}/",
       "title": "Delete a Profile",
       "reason": "not in the CLI's surface; review before exposing"
@@ -6234,6 +6425,31 @@
     {
       "id": "GET /MultiPartyCall/name_{mpc_name}/Participant/{member_id}/",
       "title": "Retrieve a Participant",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Number/{number}/",
+      "title": "Retrieve a Number",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Shortcode/",
+      "title": "List All Shortcodes",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Shortcode/{shortcode}/",
+      "title": "Retrieve a Shortcode",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Tollfree/",
+      "title": "List All Toll-Free Numbers",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "GET /NumberPool/{number_pool_uuid}/Tollfree/{toll_free_number}/",
+      "title": "Retrieve a Toll-Free Number",
       "reason": "not in the CLI's surface; review before exposing"
     },
     {
@@ -6322,11 +6538,6 @@
       "reason": "outside api.plivo.com/v1/Account/{auth_id}/, which the auth proxy does not route"
     },
     {
-      "id": "GET lookup.plivo.com/v1/Number/{PhoneNumber}",
-      "title": "Look Up a Phone Number",
-      "reason": "outside api.plivo.com/v1/Account/{auth_id}/, which the auth proxy does not route"
-    },
-    {
       "id": "POST /10dlc/Campaign/Import/",
       "title": "Import a Campaign (Beta)",
       "reason": "not in the CLI's surface; review before exposing"
@@ -6379,6 +6590,11 @@
     {
       "id": "POST /MultiPartyCall/{mpc_name}/Participant/{member_id}/Record/",
       "title": "Start Recording",
+      "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "POST /NumberPool/{number_pool_uuid}/Tollfree/{toll_free_number}/",
+      "title": "Add a Toll-Free Number",
       "reason": "not in the CLI's surface; review before exposing"
     },
     {
@@ -6475,6 +6691,11 @@
       "id": "POST /WhatsApp/Template/{waba_id}/{template_id}/",
       "title": "Update a Template",
       "reason": "not in the CLI's surface; review before exposing"
+    },
+    {
+      "id": "POST api.plivo.com/v1/account/{auth_id}/message/{message_uuid}/conversion",
+      "title": "Reporting successful conversions to Plivo",
+      "reason": "outside api.plivo.com/v1/Account/{auth_id}/, which the auth proxy does not route"
     }
   ]
 }

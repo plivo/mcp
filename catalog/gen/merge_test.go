@@ -42,14 +42,16 @@ func TestCoversWildcardOnlyMatchesPlaceholders(t *testing.T) {
 
 func TestModuleFor(t *testing.T) {
 	cases := map[string]string{
-		"POST /Message/":              "message.send",
-		"POST /Powerpack/":            "message.write",
-		"GET /Message/{id}/":          "message.read",
-		"DELETE /Call/{call_uuid}/":   "call.make",
-		"POST /PhoneNumber/{number}/": "number.write",
-		"GET /":                       "account.read",
-		"POST /Zentrunk/Trunk/":       "sip.write",
-		"GET /SomethingNew/":          "",
+		"POST /Message/":                      "message.send",
+		"POST /Powerpack/":                    "message.write",
+		"GET /Message/{id}/":                  "message.read",
+		"DELETE /Call/{call_uuid}/":           "call.make",
+		"POST /PhoneNumber/{number}/":         "number.write",
+		"GET /":                               "account.read",
+		"POST /Zentrunk/Trunk/":               "sip.write",
+		"DELETE /NumberPool/{id}/Number/{n}/": "message.write",
+		"GET /v1/Lookup/Number/{n}":           "number.read",
+		"GET /SomethingNew/":                  "",
 	}
 	for in, want := range cases {
 		p := strings.SplitN(in, " ", 2)
@@ -165,5 +167,34 @@ func TestUnconfirmedPricingIsFlagged(t *testing.T) {
 	}
 	if !cat.Operations[0].CostsMoney || len(rv.PricingCheck) != 1 {
 		t.Errorf("an op with unconfirmed billing must be flagged and listed: costs=%v pricing=%v", cat.Operations[0].CostsMoney, rv.PricingCheck)
+	}
+}
+
+func TestBuildRoutesLookupThroughTheProxy(t *testing.T) {
+	lookup := DocOp{Method: "GET", Host: lookupHost, Path: "/v1/Number/{PhoneNumber}", Title: "Look Up", Page: "https://plivo.com/docs/lookup/api/x",
+		Params: []Param{{Name: "type", In: "query", Type: "string"}}}
+	inv := &CLIInventory{Uses: map[string]*CLIUse{"GET !/v1/Lookup/Number/{}": {Method: "GET", Segs: []string{"!/v1/Lookup/Number/{}"}, Sources: []string{"lookup.go:runLookup"}}}}
+	cat, _, err := Build([]DocOp{lookup}, nil, inv, &Overrides{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Operations) != 1 {
+		t.Fatalf("lookup must be included: excluded %+v", cat.Excluded)
+	}
+	op := cat.Operations[0]
+	if op.Path != "/v1/Lookup/Number/{PhoneNumber}" || op.Module != "number.read" || !op.CostsMoney || len(op.PathParams) != 1 {
+		t.Errorf("lookup op: %+v", op)
+	}
+}
+
+func TestOverrideDescriptionReplacesTheDocs(t *testing.T) {
+	yes := true
+	ov := &Overrides{Ops: map[string]OpOverride{"GET /NumberPool/{number_pool_uuid}/Number/": {Include: &yes, Description: "Use the pool id.", Reason: "r"}}}
+	cat, _, err := Build([]DocOp{docOp("GET", "/NumberPool/{number_pool_uuid}/Number/")}, nil, inventory(), ov, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Operations) != 1 || cat.Operations[0].Description != "Use the pool id." {
+		t.Errorf("got %+v", cat.Operations)
 	}
 }
