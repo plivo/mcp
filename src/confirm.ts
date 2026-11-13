@@ -10,6 +10,7 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import { approvalId, type Approvals } from "./approvals";
 import { getOperation, type Operation } from "./catalog";
 import type { BuiltRequest } from "./upstream";
 
@@ -65,14 +66,20 @@ export function approvalReasons(op: Operation): string[] {
   return why;
 }
 
-/** What the user approves: one exact request (method, URL and body), by digest. `k` marks state minted for an elicitation. */
+/**
+ * What the user approves: one exact request (method, URL and body), by digest. `k` marks state minted for an
+ * elicitation. `n` makes every approval distinct, so spending one cannot spend another for the same request.
+ */
 interface Pending {
   d: string;
   k?: "elicit";
+  n?: string;
 }
 
 export interface Confirmer {
   code: RequestStateCodec<Pending>;
+  /** Absent in local development, where there is no auth proxy to remember a spent approval. */
+  approvals?: Approvals;
 }
 
 export const CODE_TTL_SECONDS = 300;
@@ -83,10 +90,30 @@ export const confirmationCodeField = z
   .optional()
   .describe("Only after a previous call returned confirmation_required and the user approved that exact action.");
 
-export function createConfirmer(secret: string): Confirmer {
+export function createConfirmer(secret: string, approvals?: Approvals): Confirmer {
   // Bound to the caller's credential: one account's approval cannot authorize another's request.
   const bind = (ctx: ServerContext) => ctx.http?.authInfo?.token ?? "";
-  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }) };
+  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals };
+}
+
+/**
+ * Spends a verified approval, so it sends its request once however often it is presented. Any answer but a clear
+ * one refuses the action: an approval that may already have been used must not run again.
+ */
+async function spend(c: Confirmer, ctx: ServerContext, proof: string): Promise<Gate> {
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  if (!c.approvals || !authorization.startsWith("Bearer ")) return { approved: true };
+  const outcome = await c.approvals.consume(await approvalId(proof), authorization);
+  if (outcome === "ok" || outcome === "absent") return { approved: true };
+  return {
+    approved: false,
+    result: textResult(
+      outcome === "used"
+        ? "This approval was already used once. Nothing was done; call again without it and ask the user again."
+        : "The approval could not be recorded as used, so nothing was done. Try again shortly.",
+      true,
+    ),
+  };
 }
 
 function canonical(v: unknown): string {
@@ -301,7 +328,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
       approved: false,
       result: inputRequired({
         inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n\nApprove this action?`, requestedSchema: APPROVAL_SCHEMA }) },
-        requestState: await c.code.mint({ d, k: "elicit" }, ctx),
+        requestState: await c.code.mint({ d, k: "elicit", n: crypto.randomUUID() }, ctx),
       }),
     };
   }
@@ -313,7 +340,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   }
   if (p.k !== "elicit" || p.d !== d) return { approved: false, result: textResult("The approval was for a different request. Nothing was done.", true) };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
-  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return { approved: true };
+  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return spend(c, ctx, String(raw));
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
 }
 
@@ -343,7 +370,7 @@ export async function confirmGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.k === undefined && p.d === d) return { approved: true };
+    if (p.k === undefined && p.d === d) return spend(c, ctx, code);
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 
@@ -353,7 +380,7 @@ export async function confirmGate(
       status: "confirmation_required",
       nothing_done_yet: true,
       action: shown.action,
-      confirmation_code: await c.code.mint({ d }, ctx),
+      confirmation_code: await c.code.mint({ d, n: crypto.randomUUID() }, ctx),
       expires_in_seconds: CODE_TTL_SECONDS,
       instructions:
         "Show the user this action and ask them to approve it. Only if they explicitly say yes, call the same tool " +
