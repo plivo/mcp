@@ -413,18 +413,37 @@ describe("confirmation", () => {
     expect(action).toContain("delete it in the Plivo console");
   });
 
-  it("hides secrets at any depth of an agent graph, as cx-core does", async () => {
-    const { toWorker } = setup();
-    const client = await connect(toWorker);
-    const nodes = [
-      { id: "ai-1", type: "ai_agent", config: { prompt: "Greet the caller", model: { api_key: "sk-live-1", auth_params: { password: "p-2" } } } },
-      { id: "http-1", type: "http_request", config: { url: `https://${["bob", "p-3"].join(":")}@hooks.example.com/x?token=t-4&page=2`, headers: '{"Authorization":"Bearer t-5"}' } },
-    ];
-    const res = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes } });
-    const action = (res.parsed as { action: string }).action;
-    for (const secret of ["sk-live-1", "p-2", "p-3", "t-4", "t-5"]) expect(action).not.toContain(secret);
+  const agentUpdate = (config: unknown) => ({
+    id: "POST /AgentFlow/{agent_id}/",
+    path_params: { agent_id: "a1" },
+    params: { nodes: [{ id: "ai-1", type: "ai_agent", config: { prompt: "Greet the caller", ...(config as object) } }] },
+  });
+
+  it.each<[string, unknown, string]>([
+    ["secret-named keys at any depth", { model: { api_key: "S1", auth_params: { password: "S1" } } }, '"api_key":"(hidden, 2 characters)"'],
+    ["URL credentials wherever the URL starts", { url: ` ${["https://bob", "S1"].join(":")}@hooks.example.com/x?token=S1&page=2`, alt: "https:h/?token=S1" }, "hooks.example.com/x?token=(hidden)&page=2"],
+    ["a query name with a malformed escape", { url: "https://h.example.com/?api%5fkey%FF=S1" }, "api%5fkey%FF=(hidden)"],
+    ["a JSON-encoded credential field", { headers: '{"Authorization":"Bearer S1","X-Shop":"7"}' }, 'X-Shop'],
+    ["a credential field mixing a secret and a template", { headers: '{"Authorization":"Bearer S1","X-ID":{{session.id}}}' }, '"headers":"(hidden, '],
+    ["a key that matches only with Unicode case folding", { "\u017Fecret": "S1" }, "(hidden, 2 characters)"],
+  ])("hides %s in an agent preview", async (_, config, shows) => {
+    const client = await connect(setup().toWorker);
+    const action = ((await call(client, "plivo_api_write", agentUpdate(config))).parsed as { action: string }).action;
+    expect(action).not.toContain("S1");
     expect(action).toContain("Greet the caller");
-    expect(action).toContain("hooks.example.com/x?token=(hidden)&page=2");
+    expect(action).toContain(shows);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["is nested too deeply to check", { deep: Array.from({ length: 60 }).reduce<unknown>((inner) => ({ a: inner }), "x") }, "nested too deeply"],
+    ["would differ from what is sent once its secrets are hidden", { headers: '{"note":"a","note":"b","api_key":"S1"}' }, "cannot be shown exactly"],
+  ])("refuses a preview that %s", async (_, config, why) => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), "plivo_api_write", agentUpdate(config));
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain(why);
+    expect(res.raw).not.toContain("S1");
+    expect(sent).toHaveLength(0);
   });
 
   it("shows every value in full, and refuses a preview too long to read", async () => {
@@ -439,6 +458,8 @@ describe("confirmation", () => {
     expect(big.isError).toBe(true);
     expect(big.raw).toContain("too long to show the user");
     expect(big.raw).not.toContain("confirmation_code");
+    const withCode = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes }, confirmation_code: "x" });
+    expect(withCode.raw).toContain("too long to show the user");
     expect(sent).toHaveLength(0);
   });
 

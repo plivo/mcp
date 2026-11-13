@@ -96,32 +96,23 @@ const MAX_PREVIEW_CHARS = 8_000;
 const PLAIN_KEY = /^[A-Za-z0-9_.[\]-]+$/;
 
 // The preview lands in the chat transcript, so it hides what cx-core hides when it returns an agent
-// (usecases/agent_management.py): secret-named fields at any depth, unparseable JSON-encoded credential
-// fields and URL credentials. Like the CLI, it never prints a password back.
-const SECRET_KEY = new RegExp(["token", "password", "secret", "api[_-]?key", "authorization", "cookie"].join("|"), "i");
+// (usecases/agent_management.py): secret-named fields at any depth, JSON-encoded credential fields and URL
+// credentials. Like the CLI, it never prints a password back. Only fields that hold credentials are hidden:
+// hiding words in free text would let a crafted value hide itself from the user.
+const SECRET_KEY = new RegExp(["token", "password", "secret", "api[_-]?key", "authorization", "cookie"].join("|"), "iu");
 const JSON_SECRET_FIELDS = new Set(["headers", "params", "body", "auth_params", "http_headers", "http_params", "http_body_template"]);
 const WHOLE_TEMPLATE = /^\{\{[^{}]*\}\}$/;
+const URL_LIKE = /[a-z][a-z0-9+.-]*:[^\s"'<>`]+/giu;
 const MAX_DEPTH = 50;
+
+/** A value the preview cannot show both exactly and without its secrets; the write is refused instead. */
+class Unshowable extends Error {}
 
 const hide = (s: string) => `(hidden, ${s.length} characters)`;
 
-function decoded(s: string): string {
-  try {
-    return decodeURIComponent(s.replaceAll("+", " "));
-  } catch {
-    return s;
-  }
-}
-
-function hideUrlCredentials(s: string): string {
-  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/is.exec(s);
-  if (!m) return s;
-  let authority = m[2];
-  const at = authority.lastIndexOf("@");
-  const colon = at > 0 ? authority.slice(0, at).indexOf(":") : -1;
-  if (colon >= 0) authority = `${authority.slice(0, colon)}:(hidden)${authority.slice(at)}`;
-  return m[1] + authority + m[3] + hideQuerySecrets(m[4] ?? "") + (m[5] ?? "");
-}
+// Forgiving like Python's unquote: one bad escape must not stop "api%5fkey" being read as api_key.
+const decoded = (s: string) =>
+  s.replaceAll("+", " ").replace(/%([0-9a-f]{2})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
 
 function hideQuerySecrets(query: string): string {
   if (!query) return query;
@@ -132,6 +123,42 @@ function hideQuerySecrets(query: string): string {
     return eq > 0 && value && SECRET_KEY.test(decoded(name)) && !WHOLE_TEMPLATE.test(decoded(value)) ? `${name}=(hidden)` : pair;
   });
   return `?${pairs.join("&")}`;
+}
+
+function hideUrlCredentials(s: string): string {
+  return s.replace(URL_LIKE, (url) => {
+    const q = url.indexOf("?");
+    const f = url.indexOf("#", Math.max(q, 0));
+    let head = url.slice(0, q >= 0 ? q : f >= 0 ? f : undefined);
+    const query = q >= 0 ? url.slice(q, f >= 0 ? f : undefined) : "";
+    const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*)(.*)$/isu.exec(head);
+    if (m) {
+      const at = m[2].lastIndexOf("@");
+      const colon = at > 0 ? m[2].slice(0, at).indexOf(":") : -1;
+      if (colon >= 0) head = `${m[1]}${m[2].slice(0, colon)}:(hidden)${m[2].slice(at)}${m[3]}`;
+    }
+    return head + hideQuerySecrets(query) + (f >= 0 ? url.slice(f) : "");
+  });
+}
+
+/** s without whitespace outside strings: equal to JSON.stringify of its parse only if parsing lost nothing. */
+function minifyJson(s: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      out += c;
+      if (c === "\\") out += s[++i] ?? "";
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+      out += c;
+    } else if (!" \t\n\r".includes(c)) {
+      out += c;
+    }
+  }
+  return out;
 }
 
 function mapObject(o: object, f: (v: unknown, k: string) => unknown): Record<string, unknown> {
@@ -150,7 +177,7 @@ function hideAll(v: unknown, depth: number): unknown {
 }
 
 function redact(v: unknown, key: string, depth: number): unknown {
-  if (depth > MAX_DEPTH) return "(hidden)";
+  if (depth > MAX_DEPTH) throw new Unshowable("it is nested too deeply");
   if (Array.isArray(v)) return v.map((x) => redact(x, key, depth + 1));
   if (v !== null && typeof v === "object") {
     return mapObject(v, (x, k) => (SECRET_KEY.test(k) ? hideAll(x, depth + 1) : redact(x, k, depth + 1)));
@@ -164,9 +191,13 @@ function redact(v: unknown, key: string, depth: number): unknown {
   }
   if (parsed !== null && typeof parsed === "object") {
     const r = redact(parsed, key, depth + 1);
-    return canonical(r) === canonical(parsed) ? v : JSON.stringify(r);
+    if (canonical(r) === canonical(parsed)) return v;
+    // Duplicate keys and long numbers do not survive a parse, so the rewritten text would not be what is sent.
+    if (JSON.stringify(parsed) !== minifyJson(v)) throw new Unshowable("a JSON text in it cannot be shown exactly once its secrets are hidden");
+    return JSON.stringify(r);
   }
-  if (JSON_SECRET_FIELDS.has(key) && !(v.includes("{{") && v.includes("}}"))) return hide(v);
+  // Stricter than cx-core, which passes any value holding a {{template}}: a secret can sit beside one.
+  if (JSON_SECRET_FIELDS.has(key) && !WHOLE_TEMPLATE.test(v)) return hide(v);
   return hideUrlCredentials(v);
 }
 
@@ -202,12 +233,36 @@ function textResult(value: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
+function preview(op: Operation, req: BuiltRequest): { action: string } | { refusal: CallToolResult } {
+  let action: string;
+  try {
+    action = describeAction(op, req);
+  } catch (e) {
+    if (!(e instanceof Unshowable)) throw e;
+    return { refusal: textResult(`Nothing was done: this action cannot be shown to the user for approval, because ${e.message}. Make the change in the Plivo console.`, true) };
+  }
+  if (action.length > MAX_PREVIEW_CHARS) {
+    return {
+      refusal: textResult(
+        `Nothing was done: this action is ${action.length} characters, too long to show the user for approval (the limit is ` +
+          `${MAX_PREVIEW_CHARS}). Make the change in smaller steps if the operation allows it, or in the Plivo console.`,
+        true,
+      ),
+    };
+  }
+  return { action };
+}
+
+
 /**
  * Decides whether a request that needs approval (see approvalReasons) may be sent now. The first call returns a
  * preview and a code; only a call carrying a fresh code, from the same caller, for this exact request is sent.
  */
 export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operation, req: BuiltRequest, code: string | undefined): Promise<Gate> {
   const d = await requestDigest(req);
+  // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
+  const shown = preview(op, req);
+  if ("refusal" in shown) return { approved: false, result: shown.refusal };
 
   if (code !== undefined) {
     let p: Pending;
@@ -220,23 +275,12 @@ export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operatio
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 
-  const action = describeAction(op, req);
-  if (action.length > MAX_PREVIEW_CHARS) {
-    return {
-      approved: false,
-      result: textResult(
-        `Nothing was done: this action is ${action.length} characters, too long to show the user for approval (the limit is ` +
-          `${MAX_PREVIEW_CHARS}). Make the change in smaller steps if the operation allows it, or in the Plivo console.`,
-        true,
-      ),
-    };
-  }
   return {
     approved: false,
     result: textResult({
       status: "confirmation_required",
       nothing_done_yet: true,
-      action,
+      action: shown.action,
       confirmation_code: await c.code.mint({ d }, ctx),
       expires_in_seconds: CODE_TTL_SECONDS,
       instructions:
