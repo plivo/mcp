@@ -108,7 +108,10 @@ const MAX_DEPTH = 50;
 /** A value the preview cannot show both exactly and without its secrets; the write is refused instead. */
 class Unshowable extends Error {}
 
-const hide = (s: string) => `(hidden, ${s.length} characters)`;
+// cx-core returns secrets as this placeholder and keeps the stored secret when it comes back, so a user can
+// tell a kept secret from a new one.
+const KEPT_PLACEHOLDER = `${"*".repeat(3)}REDACTED${"*".repeat(3)}`;
+const hide = (s: string) => (s === KEPT_PLACEHOLDER ? "(unchanged: the stored secret)" : `(hidden, ${s.length} characters)`);
 
 // Forgiving like Python's unquote: one bad escape must not stop "api%5fkey" being read as api_key.
 const decoded = (s: string) =>

@@ -426,6 +426,7 @@ describe("confirmation", () => {
     ["a JSON-encoded credential field", { headers: '{"Authorization":"Bearer S1","X-Shop":"7"}' }, 'X-Shop'],
     ["a credential field mixing a secret and a template", { headers: '{"Authorization":"Bearer S1","X-ID":{{session.id}}}' }, '"headers":"(hidden, '],
     ["a key that matches only with Unicode case folding", { "\u017Fecret": "S1" }, "(hidden, 2 characters)"],
+    ["nothing, but marks a kept secret", { model: { api_key: `${"*".repeat(3)}REDACTED${"*".repeat(3)}` } }, '"api_key":"(unchanged: the stored secret)"'],
   ])("hides %s in an agent preview", async (_, config, shows) => {
     const client = await connect(setup().toWorker);
     const action = ((await call(client, "plivo_api_write", agentUpdate(config))).parsed as { action: string }).action;
