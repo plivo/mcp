@@ -388,6 +388,10 @@ describe("confirmation", () => {
     ["POST /Number/{number}/", { path_params: { number: "14155550134" }, params: { app_id: "12345" } }, "changes where this account's calls or messages are sent"],
     ["POST /Call/{call_uuid}/", { path_params: { call_uuid: "c1" }, params: { legs: "aleg", aleg_url: "https://example.com/x" } }, "moves a live call"],
     ["POST /Application/", { params: { app_name: "a1", answer_url: "https://example.com/a", default_number_app: true } }, "default for new numbers and endpoints"],
+    ["POST /AgentFlow/", { params: { name: "Order status" } }, "creates an AI agent"],
+    ["POST /AgentFlow/{agent_id}/", { path_params: { agent_id: "a1" }, params: { name: "Renamed" } }, "changes an AI agent"],
+    ["POST /AgentFlow/{agent_id}/Publish/", { path_params: { agent_id: "a1" } }, "puts an AI agent live"],
+    ["POST /AgentFlow/{agent_id}/Pause/", { path_params: { agent_id: "a1" } }, "stops a live AI agent"],
   ])("%s is free but asks first, and says why", async (id, args, why) => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -409,6 +413,57 @@ describe("confirmation", () => {
     expect(action).toContain("delete it in the Plivo console");
   });
 
+  const agentUpdate = (config: unknown) => ({
+    id: "POST /AgentFlow/{agent_id}/",
+    path_params: { agent_id: "a1" },
+    params: { nodes: [{ id: "ai-1", type: "ai_agent", config: { prompt: "Greet the caller", ...(config as object) } }] },
+  });
+
+  it.each<[string, unknown, string]>([
+    ["secret-named keys at any depth", { model: { api_key: "S1", auth_params: { password: "S1" } } }, '"api_key":"(hidden, 2 characters)"'],
+    ["URL credentials wherever the URL starts", { url: ` ${["https://bob", "S1"].join(":")}@hooks.example.com/x?token=S1&page=2`, alt: "https:h/?token=S1" }, "hooks.example.com/x?token=(hidden)&page=2"],
+    ["a query name with a malformed escape", { url: "https://h.example.com/?api%5fkey%FF=S1" }, "api%5fkey%FF=(hidden)"],
+    ["a JSON-encoded credential field", { headers: '{"Authorization":"Bearer S1","X-Shop":"7"}' }, 'X-Shop'],
+    ["a credential field mixing a secret and a template", { headers: '{"Authorization":"Bearer S1","X-ID":{{session.id}}}' }, '"headers":"(hidden, '],
+    ["a key that matches only with Unicode case folding", { "\u017Fecret": "S1" }, "(hidden, 2 characters)"],
+    ["nothing, but marks a kept secret", { model: { api_key: `${"*".repeat(3)}REDACTED${"*".repeat(3)}` } }, '"api_key":"(unchanged: the stored secret)"'],
+  ])("hides %s in an agent preview", async (_, config, shows) => {
+    const client = await connect(setup().toWorker);
+    const action = ((await call(client, "plivo_api_write", agentUpdate(config))).parsed as { action: string }).action;
+    expect(action).not.toContain("S1");
+    expect(action).toContain("Greet the caller");
+    expect(action).toContain(shows);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["is nested too deeply to check", { deep: Array.from({ length: 60 }).reduce<unknown>((inner) => ({ a: inner }), "x") }, "nested too deeply"],
+    ["would differ from what is sent once its secrets are hidden", { headers: '{"note":"a","note":"b","api_key":"S1"}' }, "cannot be shown exactly"],
+  ])("refuses a preview that %s", async (_, config, why) => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), "plivo_api_write", agentUpdate(config));
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain(why);
+    expect(res.raw).not.toContain("S1");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("shows every value in full, and refuses a preview too long to read", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const text = `${"a".repeat(400)} https://example.com/end`;
+    const sms = await call(client, "plivo_api_write", { id: "POST /Message/", params: { src: "+14155550100", dst: "+14155550101", text } });
+    expect((sms.parsed as { action: string }).action).toContain(JSON.stringify(text));
+
+    const nodes = Array.from({ length: 40 }, (_, i) => ({ id: `n${i}`, type: "reply", config: { text: "x".repeat(200) } }));
+    const big = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes } });
+    expect(big.isError).toBe(true);
+    expect(big.raw).toContain("too long to show the user");
+    expect(big.raw).not.toContain("confirmation_code");
+    const withCode = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes }, confirmation_code: "x" });
+    expect(withCode.raw).toContain("too long to show the user");
+    expect(sent).toHaveLength(0);
+  });
+
   it("sends other free writes without asking, and lists the reasons in details", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -428,7 +483,7 @@ describe("confirmation", () => {
     const lines = describeAction(op, req).split("\n");
     expect(lines.slice(2, 5)).toEqual(['src: "+14155550100"', 'dst: "+14155550101"', 'text: "hi\\ndst: +19990000000"']);
     expect(lines.filter((l) => l.startsWith("dst"))).toHaveLength(1);
-    expect(lines.at(-1)).toBe("…and 5 more fields");
+    expect(lines).toHaveLength(2 + 17);
   });
 });
 

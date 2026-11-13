@@ -66,13 +66,13 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     { name: "plivo", version: "0.1.0" },
     {
       instructions:
-        "Plivo communications API (SMS, voice calls, phone numbers, SIP trunking, 10DLC and more). " +
+        "Plivo communications API (SMS, voice calls, phone numbers, SIP trunking, 10DLC, AI agents and more). " +
         `Common tasks have their own tools: ${shortcuts.map((s) => s.name).join(", ")}. ` +
         "For anything else, find an operation with plivo_api_search, read its params with plivo_api_details, then call it with " +
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
         "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
-        "access to the account or change where calls and messages go need the user's approval; never approve one on " +
-        "the user's behalf.",
+        "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
+        "never approve one on the user's behalf.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -183,8 +183,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       title: "Call a Plivo API operation that changes data",
       description:
         "Call a POST, PATCH or DELETE operation from the catalog. Operations that cost money (sending messages, " +
-        "making calls, buying numbers), cannot be undone, create SIP access or reroute calls and messages need the " +
-        "user's approval first; plivo_api_details lists the reasons as needs_approval.",
+        "making calls, buying numbers), cannot be undone, create SIP access, reroute calls and messages or change an AI " +
+        "agent need the user's approval first; plivo_api_details lists the reasons as needs_approval.",
       inputSchema: writeInput,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },

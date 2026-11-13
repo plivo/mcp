@@ -49,6 +49,29 @@
       "destructive": true
     },
     {
+      "id": "DELETE /AgentFlow/{agent_id}/",
+      "method": "DELETE",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/",
+      "title": "Delete an Agent",
+      "section": "Delete an Agent",
+      "description": "Permanently delete an agent flow.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [],
+      "module": "agent.write",
+      "costs_money": false,
+      "destructive": true
+    },
+    {
       "id": "DELETE /Application/{app_id}/",
       "method": "DELETE",
       "path": "/v1/Account/{auth_id}/Application/{app_id}/",
@@ -850,6 +873,190 @@
       ],
       "params": [],
       "module": "message.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlow/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlow/",
+      "title": "List Agents",
+      "section": "List Agents",
+      "description": "List the AI agents (voice, chat and message agent flows) on this account.",
+      "group": "agents",
+      "docs_url": "",
+      "params": [
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "integer",
+          "description": "Results per page, 1 to 20. Defaults to 20."
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "integer",
+          "description": "Number of results to skip. Defaults to 0."
+        },
+        {
+          "name": "name",
+          "in": "query",
+          "type": "string",
+          "description": "Filter by name (substring match)."
+        },
+        {
+          "name": "state",
+          "in": "query",
+          "type": "string",
+          "description": "Filter by state: `DRAFT`, `ACTIVE` or `PAUSED`."
+        }
+      ],
+      "module": "agent.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlow/{agent_id}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/",
+      "title": "Retrieve an Agent",
+      "section": "Retrieve an Agent",
+      "description": "Get an agent flow's full definition: fields, state, nodes and connections. Secret values in node configs come back as `***REDACTED***`.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [],
+      "module": "agent.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlow/{agent_id}/Run/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/Run/",
+      "title": "List Agent Runs",
+      "section": "List Agent Runs",
+      "description": "List the runs (executions) of an agent flow.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "integer",
+          "description": "Results per page, 1 to 20. Defaults to 20."
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "integer",
+          "description": "Number of results to skip. Defaults to 0."
+        }
+      ],
+      "module": "agent.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlow/{agent_id}/Run/{run_id}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/Run/{run_id}/",
+      "title": "Retrieve an Agent Run",
+      "section": "Retrieve an Agent Run",
+      "description": "Get one run of an agent flow: status, logs and goal metrics.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        },
+        {
+          "name": "run_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The run's UUID, from List Agent Runs."
+        }
+      ],
+      "params": [],
+      "module": "agent.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlowNode/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlowNode/",
+      "title": "List Agent Node Types",
+      "section": "List Agent Node Types",
+      "description": "List the node types available for building an agent flow's graph.",
+      "group": "agents",
+      "docs_url": "",
+      "params": [
+        {
+          "name": "types",
+          "in": "query",
+          "type": "string",
+          "description": "Comma-separated node types, to return only those."
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "integer",
+          "description": "Results per page, 1 to 100. Defaults to 100."
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "integer",
+          "description": "Number of results to skip. Defaults to 0."
+        }
+      ],
+      "module": "agent.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /AgentFlowNode/{node_type}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/AgentFlowNode/{node_type}/",
+      "title": "Retrieve an Agent Node Type",
+      "section": "Retrieve an Agent Node Type",
+      "description": "Get the JSON Schema a node type's `config` must match, before wiring it into a flow with Create an Agent or Update an Agent. `x-plivo-coverage` lists server-side rules (conditional requirements, secret references) the schema cannot express.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "node_type",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "A node type from List Agent Node Types."
+        }
+      ],
+      "params": [],
+      "module": "agent.read",
       "costs_money": false,
       "destructive": false
     },
@@ -3156,6 +3363,169 @@
         }
       ],
       "module": "message.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /AgentFlow/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/AgentFlow/",
+      "title": "Create an Agent",
+      "section": "Create an Agent",
+      "description": "Create an AI agent flow: a graph of typed nodes wired together with connections. It starts as a DRAFT and handles no traffic until published. If the name is taken, the server appends \" 1\", \" 2\" and so on, and returns the stored name.",
+      "group": "agents",
+      "docs_url": "",
+      "params": [
+        {
+          "name": "name",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "Agent name."
+        },
+        {
+          "name": "description",
+          "in": "body",
+          "type": "string",
+          "description": "Agent description."
+        },
+        {
+          "name": "nodes",
+          "in": "body",
+          "type": "array",
+          "description": "The flow's typed nodes; see List Agent Node Types for the catalogue and Retrieve an Agent Node Type for each node's `config` schema. Every node must be referenced by at least one connection, or the request is rejected (422) naming the orphaned node ids."
+        },
+        {
+          "name": "connections",
+          "in": "body",
+          "type": "array",
+          "description": "Edges between nodes, each `{\"source\": \"<node_id>.<handle>\", \"target\": \"<node_id>.<handle>\"}`, for example `start-1.message` or `reply-1.Input`. A bare node id with no handle is rejected (400)."
+        }
+      ],
+      "module": "agent.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /AgentFlow/{agent_id}/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/",
+      "title": "Update an Agent",
+      "section": "Update an Agent",
+      "description": "Rename an agent flow (`name` alone), or replace its whole graph (`nodes` and `connections` together). `description` with `name` but no graph is rejected (400). `nodes` is a full replacement: to remove nodes, leave them out and set `allow_node_deletion`; no connection may still point at a removed node. `***REDACTED***` sent back from Retrieve an Agent keeps the stored secret.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [
+        {
+          "name": "name",
+          "in": "body",
+          "type": "string",
+          "description": "New agent name."
+        },
+        {
+          "name": "description",
+          "in": "body",
+          "type": "string",
+          "description": "New description; send it with a full graph."
+        },
+        {
+          "name": "nodes",
+          "in": "body",
+          "type": "array",
+          "description": "The flow's typed nodes; see List Agent Node Types for the catalogue and Retrieve an Agent Node Type for each node's `config` schema. Every node must be referenced by at least one connection, or the request is rejected (422) naming the orphaned node ids."
+        },
+        {
+          "name": "connections",
+          "in": "body",
+          "type": "array",
+          "description": "Edges between nodes, each `{\"source\": \"<node_id>.<handle>\", \"target\": \"<node_id>.<handle>\"}`, for example `start-1.message` or `reply-1.Input`. A bare node id with no handle is rejected (400)."
+        },
+        {
+          "name": "allow_node_deletion",
+          "in": "body",
+          "type": "boolean",
+          "description": "Allow the `nodes` sent to remove the stored nodes they leave out. Without it the update is refused (422)."
+        }
+      ],
+      "module": "agent.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /AgentFlow/{agent_id}/Pause/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/Pause/",
+      "title": "Pause an Agent",
+      "section": "Pause an Agent",
+      "description": "Pause an ACTIVE agent flow so it stops handling traffic.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [],
+      "module": "agent.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /AgentFlow/{agent_id}/Publish/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/Publish/",
+      "title": "Publish an Agent",
+      "section": "Publish an Agent",
+      "description": "Publish an agent flow, moving it from DRAFT to ACTIVE so it starts handling traffic.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [],
+      "module": "agent.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /AgentFlow/{agent_id}/Resume/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/AgentFlow/{agent_id}/Resume/",
+      "title": "Resume an Agent",
+      "section": "Resume an Agent",
+      "description": "Resume a PAUSED agent flow, returning it to ACTIVE.",
+      "group": "agents",
+      "docs_url": "",
+      "path_params": [
+        {
+          "name": "agent_id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "description": "The agent's UUID, from List Agents."
+        }
+      ],
+      "params": [],
+      "module": "agent.write",
       "costs_money": false,
       "destructive": false
     },

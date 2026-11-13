@@ -76,7 +76,8 @@ cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<
 
 - Plivo's docs export (`llms-full.txt`): params, types, required flags, descriptions
 - plivo-cli's source: which endpoints to expose (the CLI's surface) and which spend money (`guardSpend`)
-- `catalog/overrides.json`: reviewed decisions, each with a reason
+- `catalog/overrides.json`: reviewed decisions, each with a reason, and `extra_ops`: operations the CLI calls that the
+  docs do not describe (the Agents API), written from the CLI's commands and the server's validation
 
 Each run also writes `catalog/REVIEW.md`: what was included and why, what was excluded, new scope modules
 the auth proxy needs, pricing to confirm, and param names where the docs and the SDKs disagree. The build fails on a
