@@ -1,11 +1,12 @@
 import { McpServer, type McpRequestContext, type ServerContext } from "@modelcontextprotocol/server";
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
 import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
-import { buildRequest, callUpstream, type Credential } from "./upstream";
+import { buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
 
 export interface ServerConfig {
   apiBase: string;
@@ -67,6 +68,45 @@ const callInput = z.object({
 
 const writeInput = callInput.extend({ confirmation_code: confirmationCodeField });
 
+const PRICE = /^\d+(\.\d+)?$/;
+
+/**
+ * What a paid action costs and which account pays, for the approval preview. A failed lookup never blocks the preview.
+ * Plivo shows tax only on the invoice, so the preview always says it may apply.
+ */
+async function costLines(op: Operation, args: CallArgs, caller: Credential, config: ServerConfig): Promise<string[]> {
+  const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
+    const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
+    if ("error" in r) return undefined;
+    try {
+      const res = await callUpstream(r, caller, config.fetchImpl);
+      return res.ok && res.body !== null && typeof res.body === "object" ? (res.body as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const numberPrice = async (): Promise<string | undefined> => {
+    const digits = String(args.path_params?.number ?? "").replace(/^\+/, "");
+    const parsed = parsePhoneNumberFromString(`+${digits}`);
+    if (!parsed?.country) return undefined;
+    const found = await get("GET /PhoneNumber/", { params: { country_iso: parsed.country, pattern: parsed.nationalNumber, limit: 20 } });
+    const hit = (found?.objects as Record<string, unknown>[] | undefined)?.find((o) => String(o.number) === digits);
+    const monthly = String(hit?.monthly_rental_rate ?? "");
+    const setup = String(hit?.setup_rate ?? "");
+    return PRICE.test(monthly) && PRICE.test(setup) ? `Price: $${monthly} a month and $${setup} setup.` : undefined;
+  };
+  const [account, price] = await Promise.all([get("GET /", {}), op.id === "POST /PhoneNumber/{number}/" ? numberPrice() : undefined]);
+  const balance = String(account?.cash_credits ?? "");
+  const lines = [
+    typeof account?.name === "string"
+      ? `Account: ${JSON.stringify(account.name)}${PRICE.test(balance) ? `, balance $${balance}` : ""}.`
+      : "Account: unavailable.",
+  ];
+  if (op.id === "POST /PhoneNumber/{number}/") lines.push(price ?? "Price: unavailable; search_numbers shows it.");
+  lines.push("Taxes may apply.");
+  return lines;
+}
+
 export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpServer {
   const server = new McpServer(
     { name: "plivo", version: "0.1.0" },
@@ -100,7 +140,10 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if ("error" in req) return text(req.error, true);
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
-      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code);
+      // Looked up only for the question, not the call that carries the answer.
+      const asking = args.confirmation_code === undefined && reqCtx.mcpReq.requestState() === undefined;
+      const extra = asking && op.costs_money ? await costLines(op, args, caller, config) : [];
+      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, extra);
       if (!gate.approved) return gate.result;
     }
     let res;
