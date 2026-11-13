@@ -225,12 +225,39 @@ describe("guardrails", () => {
     expect(await last.json()).toMatchObject({ error: "invalid_token" });
   });
 
-  it("keeps a 401 from Plivo behind a valid token a tool error, so the client is not sent round a sign-in loop", async () => {
-    const { toWorker } = setup({}, { status: 401, body: { error: "Authentication credentials invalid" } });
+  it.each<[string, { pin: "2026-07-28" } | undefined]>([
+    ["2025 client", undefined],
+    ["2026-07-28 client", { pin: "2026-07-28" }],
+  ])("%s: a token minted without the module a tool needs gets an HTTP 403 that asks for approval again", async (_, mode) => {
+    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+    const { toWorker } = setup(oauth, {
+      status: 403,
+      body: { api_id: "x", data: null, errors: { global_error: "Token is not authorised for this module", required_module: "agent.read" }, message: "" },
+    });
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    const client = await connect(recording, STK, mode);
+    await expect(client.callTool({ name: "plivo_api_read", arguments: { id: "GET /AgentFlow/" } })).rejects.toThrow();
+    const last = replies.at(-1)!;
+    expect(last.status).toBe(403);
+    expect(last.headers.get("WWW-Authenticate")).toBe('Bearer error="insufficient_scope", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
+    expect(await last.json()).toMatchObject({ error: "insufficient_scope" });
+  });
+
+  it.each([
+    [401, { error: "Authentication credentials invalid" }],
+    [403, { api_id: "x", error: "subaccount cannot do this" }],
+  ])("keeps a %i from Plivo behind a valid token a tool error, so the client is not sent round a sign-in loop", async (status, body) => {
+    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+    const { toWorker } = setup(oauth, { status, body });
     const client = await connect(toWorker);
     const res = await call(client, "plivo_api_read", { id: "GET /Call/" });
     expect(res.isError).toBe(true);
-    expect(res.parsed).toMatchObject({ status: 401 });
+    expect(res.parsed).toMatchObject({ status });
   });
 
   it("reads no more of an oversized body than the SDK's 4 MiB limit before refusing it", async () => {

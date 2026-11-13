@@ -6,7 +6,7 @@ import {
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createConfirmer } from "./confirm";
-import { handleOAuth, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
+import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
 import { parseCredential, readCapped } from "./upstream";
 
@@ -63,9 +63,9 @@ export function apiBaseError(base: string | undefined, name = "PLIVO_API_BASE"):
   return undefined;
 }
 
-function unauthorized(reason: string, challenge: string, error = "unauthorized"): Response {
+function unauthorized(reason: string, challenge: string, error = "unauthorized", status = 401): Response {
   return new Response(JSON.stringify({ error, error_description: reason }), {
-    status: 401,
+    status,
     headers: { "Content-Type": "application/json", "WWW-Authenticate": challenge },
   });
 }
@@ -148,6 +148,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
       if ("error" in cred) return unauthorized(cred.error, challenge());
 
       let tokenRejected = false;
+      let scopeMissing = false;
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
@@ -155,6 +156,9 @@ export function createWorker(fetchImpl?: typeof fetch) {
         fetchImpl,
         onTokenRejected: () => {
           tokenRejected = true;
+        },
+        onScopeMissing: () => {
+          scopeMissing = true;
         },
       };
       const toolCall = request.method === "POST" && (await callsTool(request));
@@ -165,6 +169,14 @@ export function createWorker(fetchImpl?: typeof fetch) {
       const body = await res.arrayBuffer();
       if (tokenRejected) {
         return unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      }
+      if (scopeMissing && env.PLIVO_LOGIN_BASE) {
+        return unauthorized(
+          "This connection was approved before this tool's permission existed. Approve the Plivo connection again to use it.",
+          insufficientScopeChallenge(publicOrigin),
+          "insufficient_scope",
+          403,
+        );
       }
       return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },

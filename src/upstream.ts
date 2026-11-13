@@ -114,6 +114,8 @@ export interface UpstreamResult {
   body: unknown;
   /** The auth proxy refused the caller's token itself (not a 401 from Plivo behind it). */
   tokenRejected?: boolean;
+  /** The auth proxy refused the call because the token was minted without the module it needs. */
+  scopeMissing?: boolean;
 }
 
 const TIMEOUT_MS = 25_000;
@@ -148,7 +150,9 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   // The proxy marks its own token refusals; Plivo's 401 for the account behind a valid token must not
   // send the client into a sign-in loop.
   const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
-  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}) };
+  // The proxy names the missing module under errors.required_module; Plivo's own 403s use `error` and never carry it.
+  const scopeMissing = res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
+  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
 }
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */
