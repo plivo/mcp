@@ -300,9 +300,11 @@ describe("shortcuts", () => {
     const { toWorker, sent } = setup({ CONFIRMATION_MODE: "allow" });
     const client = await connect(toWorker);
     await call(client, "send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi" });
+    await call(client, "send_sms", { powerpack_uuid: "pp-1", dst: "+14155550101", text: "hi" });
     await call(client, "buy_number", { number: "14155550100", app_id: "app-1" });
     expect(sent).toEqual([
       { url: `${API}/v1/Account/me/Message/`, method: "POST", auth: STK, body: { src: "+14155550100", dst: "+14155550101", text: "hi" } },
+      { url: `${API}/v1/Account/me/Message/`, method: "POST", auth: STK, body: { powerpack_uuid: "pp-1", dst: "+14155550101", text: "hi" } },
       { url: `${API}/v1/Account/me/PhoneNumber/14155550100/`, method: "POST", auth: STK, body: { app_id: "app-1" } },
     ]);
   });
@@ -313,6 +315,7 @@ describe("shortcuts", () => {
     const bad: [string, Record<string, unknown>][] = [
       ["send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi", made_up: 1 }],
       ["send_sms", { src: "+14155550100", text: "hi" }],
+      ["send_sms", { dst: "+14155550101", text: "hi" }],
       ["get_message", { message_uuid: "../Call" }],
     ];
     for (const [name, args] of bad) expect((await call(client, name, args)).isError, JSON.stringify(args)).toBe(true);
@@ -326,7 +329,8 @@ describe("shortcuts", () => {
       additionalProperties?: boolean;
       properties: Record<string, { description?: string }>;
     };
-    expect(schema("send_sms")).toMatchObject({ required: expect.arrayContaining(["src", "dst"]), additionalProperties: false });
+    expect(schema("send_sms")).toMatchObject({ required: ["dst"], additionalProperties: false });
+    expect(schema("send_sms").properties.powerpack_uuid.description).toContain("Powerpack");
     expect(schema("send_sms").properties.dst.description).toContain("E.164");
     expect(schema("list_calls").properties.end_time__gt.description).toMatch(/^end_time greater than this value\. /);
   });
@@ -335,6 +339,15 @@ describe("shortcuts", () => {
     expect(() => buildShortcuts([{ name: "x", id: "GET /Nope/", description: "", params: [] }])).toThrow(/not in the catalog/);
     expect(() => buildShortcuts([{ name: "x", id: "GET /Call/", description: "", params: ["end_time__between"] }])).toThrow(/not in the catalog/);
     expect(() => buildShortcuts([{ name: "x", id: "POST /Message/", description: "", params: ["dlt_entity_id"] }])).toThrow(/deprecated/);
+    expect(() => buildShortcuts([{ name: "x", id: "POST /Message/", description: "", params: ["dst"], oneOf: ["src"] }])).toThrow(/not one of its params/);
+  });
+
+  it("keeps every shortcut param description short, since every tools/list carries it", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const lengths = tools.flatMap((t) =>
+      Object.values((t.inputSchema as { properties: Record<string, { description?: string }> }).properties).map((p) => p.description?.length ?? 0),
+    );
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(300);
   });
 });
 
