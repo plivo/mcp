@@ -75,10 +75,12 @@ type ExtraOp struct {
 }
 
 type OpOverride struct {
-	Include    *bool  `json:"include,omitempty"`
-	CostsMoney *bool  `json:"costs_money,omitempty"`
-	Module     string `json:"module,omitempty"`
-	Reason     string `json:"reason"`
+	Include    *bool `json:"include,omitempty"`
+	CostsMoney *bool `json:"costs_money,omitempty"`
+	// Destructive overrides "every DELETE is permanent" for DELETEs that only stop or reverse something.
+	Destructive *bool  `json:"destructive,omitempty"`
+	Module      string `json:"module,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 // Review collects everything a person must read before trusting the catalog.
@@ -356,6 +358,9 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 			}
 			if o.Module != "" {
 				op.Module = o.Module
+			}
+			if o.Destructive != nil {
+				op.Destructive = *o.Destructive
 			}
 		}
 		if include && (!routable || op.Module == "") {

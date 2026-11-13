@@ -97,8 +97,23 @@ function misconfigured(reason: string): Response {
   return new Response("Server misconfigured\n", { status: 500 });
 }
 
+// Nothing the Worker serves is meant to be framed, sniffed or loaded by a page.
+const SECURITY_HEADERS: Record<string, string> = {
+  "Strict-Transport-Security": "max-age=31536000",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+};
+
+function withSecurityHeaders(res: Response): Response {
+  const out = new Response(res.body, res);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
+  return out;
+}
+
 export function createWorker(fetchImpl?: typeof fetch) {
-  return {
+  const worker = {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
       const originError = publicOriginError(env.PUBLIC_ORIGIN);
@@ -181,6 +196,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
       return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },
   };
+  return { fetch: async (request: Request, env: Env) => withSecurityHeaders(await worker.fetch(request, env)) };
 }
 
 export default createWorker();
