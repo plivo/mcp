@@ -92,6 +92,49 @@ function tokenRequest(t: ReturnType<typeof setup>, fields: Record<string, string
 
 afterEach(() => vi.useRealTimers());
 
+describe("token revocation", () => {
+  const revoke = (upstream: (url: string, init?: RequestInit) => Response | Promise<Response>, body: Record<string, string>) => {
+    const calls: { url: string; auth: string | null }[] = [];
+    const worker = createWorker((async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), auth: new Headers(init?.headers).get("Authorization") });
+      return upstream(String(url), init);
+    }) as typeof fetch);
+    const req = new Request(`${ORIGIN}/oauth/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Host: "localhost" },
+      body: new URLSearchParams(body),
+    });
+    return worker.fetch(req, ENV).then((res) => ({ res, calls }));
+  };
+
+  it("advertises the endpoint", async () => {
+    const as = (await (await setup().send("/.well-known/oauth-authorization-server")).json()) as Record<string, unknown>;
+    expect(as).toMatchObject({ revocation_endpoint: `${ORIGIN}/oauth/revoke`, revocation_endpoint_auth_methods_supported: ["none"] });
+  });
+
+  it("asks the auth proxy to delete the token, as its bearer", async () => {
+    const { res, calls } = await revoke(() => Response.json({ message: "Token revoked" }), { token: STK, token_type_hint: "access_token" });
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([{ url: `${LOGIN}/v1/accounts/cli/revoke`, auth: `Bearer ${STK}` }]);
+  });
+
+  it.each<[string, Record<string, string>, number, number]>([
+    ["answers 200 when the proxy does not know the token or has no revoke route yet", { token: STK }, 404, 200],
+    ["answers 200 for something that is not our token, without calling the proxy", { token: "not-ours" }, 200, 200],
+    ["says try again when the proxy fails", { token: STK }, 503, 503],
+    ["refuses a request without a token", {}, 200, 400],
+  ])("%s", async (_, body, upstreamStatus, want) => {
+    const { res, calls } = await revoke(() => new Response("{}", { status: upstreamStatus }), body);
+    expect(res.status).toBe(want);
+    expect(calls).toHaveLength(body.token === STK ? 1 : 0);
+  });
+
+  it("says try again when the proxy is unreachable", async () => {
+    const { res } = await revoke(() => Promise.reject(new Error("down")), { token: STK });
+    expect(res.status).toBe(503);
+  });
+});
+
 describe("OAuth sign-in", () => {
   it("points a client without a token at the sign-in metadata", async () => {
     const { send } = setup();
