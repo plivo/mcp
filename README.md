@@ -92,6 +92,10 @@ curl -sO https://docs.plivo.com/docs/llms-full.txt
 DOCS=$PWD/llms-full.txt PLIVO_CLI=/path/to/plivo-cli npm run catalog
 ```
 
+`.github/workflows/catalog-refresh.yml` does this every Tuesday on the latest docs and plivo-cli, runs the tests, and
+opens or updates one PR from `bot/catalog-refresh` when anything beyond the source commits changed. It never deploys.
+It needs "Allow GitHub Actions to create and approve pull requests" on in the repo's Actions settings.
+
 ## Development
 
 ```sh
