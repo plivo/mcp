@@ -51,6 +51,7 @@ var (
 	simpleNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	nestedNameRe = regexp.MustCompile(`^([a-z][a-z0-9_]*)\[\]\.([a-z][a-z0-9_]*)$`)
 	mdLinkRe     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	tabRe        = regexp.MustCompile(`^> \[tab\] (.+)$`)
 	unescaper    = strings.NewReplacer(`\_`, "_", `\[`, "[", `\]`, "]", `\*`, "*", `\<`, "<", `\>`, ">")
 )
 
@@ -99,10 +100,37 @@ func isPlainParagraph(l string) bool {
 	return true
 }
 
+// unwrapTabs turns a tabbed block ("> [tab] Start Playing" and the quoted lines under it) into a
+// "### Start Playing" heading over plain lines, the layout the parser reads everywhere else. Each
+// pass unwraps one level of nested tabs. Line numbers are unchanged, so anomalies still point at the export.
+func unwrapTabs(src string) string {
+	lines := strings.Split(src, "\n")
+	for changed := true; changed; {
+		changed = false
+		inTab := false
+		for i, l := range lines {
+			if m := tabRe.FindStringSubmatch(l); m != nil {
+				lines[i], inTab, changed = "### "+m[1], true, true
+				continue
+			}
+			switch {
+			case !inTab:
+			case l == ">":
+				lines[i] = ""
+			case strings.HasPrefix(l, "> "):
+				lines[i] = l[2:]
+			default:
+				inTab = false
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ParseDocs walks the docs' llms-full.txt export. Each METHOD URL line starts an op; the param
 // sections after it, up to the next METHOD URL or ## heading, belong to that op.
 func ParseDocs(src string) ([]DocOp, []Anomaly) {
-	lines := strings.Split(src, "\n")
+	lines := strings.Split(unwrapTabs(src), "\n")
 	var ops []DocOp
 	var anomalies []Anomaly
 	var page, pageTitle, h2, h2Desc, subTitle, subDesc string
