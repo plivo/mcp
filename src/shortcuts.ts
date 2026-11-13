@@ -85,9 +85,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     params: ["app_id", "cnam_lookup", "compliance_application_id", "subaccount"],
     describe: {
       compliance_application_id:
-        "UUID of an accepted compliance application whose country and number type match the number. Needed where " +
-        "the country requires documents.",
-      subaccount: "Auth ID of a subaccount to give the number to.",
+        "UUID of an accepted compliance application matching the number's country and type. Optional: without it, " +
+        "Plivo attaches the most recent matching accepted application.",
+      subaccount: "Auth ID of a subaccount to give the number to. A number that needs documents stays pending until they are approved.",
     },
   },
   { name: "hangup_call", id: "DELETE /Call/{call_uuid}/", description: "Hang up a live call or cancel a queued one.", params: [] },
