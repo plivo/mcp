@@ -5,9 +5,9 @@
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
   "vars": {
-    // The dev auth proxy, for the first end-to-end test. Point both at the production one before launch.
-    "PLIVO_API_BASE": "https://dev-global-auth-api.contactodev.com/v1/proxy",
-    "PLIVO_LOGIN_BASE": "https://dev-global-auth-api.contactodev.com",
+    // Production hodor: the browser login (/v1/accounts/cli/*) and the scope-token proxy (/v1/proxy).
+    "PLIVO_API_BASE": "https://hodor.plivo.com/v1/proxy",
+    "PLIVO_LOGIN_BASE": "https://hodor.plivo.com",
     "ALLOW_BASIC_AUTH": "false",
     "CONFIRMATION_MODE": "confirm"
   }
