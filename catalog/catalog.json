@@ -2,7 +2,7 @@
   "schema": 1,
   "sources": {
     "docs_url": "https://docs.plivo.com/docs/llms-full.txt",
-    "docs_sha256": "11d18cdfdeda2babd38cc9698c38af8a15adac7e75730d6e6479de70166cff71",
+    "docs_sha256": "ee1c0696c197f4b92b9f5fc8e269d1b9d91869223fa95838dfe69656fad9a98d",
     "cli_repo": "github.com/plivo/plivo-cli",
     "cli_commit": "27c7a03198cacf17dd88e305bde4e408258fbf77"
   },
@@ -3760,7 +3760,7 @@
           "name": "record_channel_type",
           "in": "body",
           "type": "string",
-          "description": "Recording channel. Values: `mono`, `stereo`. Default: `mono`. > [!NOTE] > > Transcription is available only in English and limited to calls with duration greater than 500ms and less than 4 hours, with file size under 2GB. > **Callback URL parameters** > > | Parameter | Type | Description | > | - | - | - | > | `api_id` | `string` | The API ID returned by the Record API. | > | `record_url` | `string` | URL where the recorded file can be accessed. | > | `call_uuid` | `string` | The call UUID of the recorded call. | > | `recording_id` | `string` | The recording ID. | > | `recording_duration` | `integer` | Recording duration in seconds. | > | `recording_duration_ms` | `integer` | Recording duration in milliseconds. | > | `recording_start_ms` | `integer` | Start time of recording (epoch ms). | > | `recording_end_ms` | `integer` | End time of recording (epoch ms). |"
+          "description": "Recording channel. Values: `mono`, `stereo`. Default: `mono`. > [!NOTE] > > Transcription is available only in English and limited to calls with duration greater than 500ms and less than 4 hours, with file size under 2GB. > [accordion] Callback URL parameters > > | Parameter | Type | Description | > | - | - | - | > | `api_id` | `string` | The API ID returned by the Record API. | > | `record_url` | `string` | URL where the recorded file can be accessed. | > | `call_uuid` | `string` | The call UUID of the recorded call. | > | `recording_id` | `string` | The recording ID. | > | `recording_duration` | `integer` | Recording duration in seconds. | > | `recording_duration_ms` | `integer` | Recording duration in milliseconds. | > | `recording_start_ms` | `integer` | Start time of recording (epoch ms). | > | `recording_end_ms` | `integer` | End time of recording (epoch ms). |"
         }
       ],
       "module": "call.make",
@@ -3820,7 +3820,7 @@
           "name": "mix",
           "in": "body",
           "type": "boolean",
-          "description": "If `true`, call and speech are mixed. Default: `true`. > **Supported Languages** > > | Language | Code | Available Voices | > | - | - | - | > | Arabic | `arb` | `WOMAN` only | > | Chinese Mandarin | `cmn-CN` | `WOMAN` only | > | Danish (Denmark) | `da-DK` | `WOMAN`, `MAN` | > | Dutch (Netherlands) | `nl-NL` | `WOMAN`, `MAN` | > | English (Australia) | `en-AU` | `WOMAN`, `MAN` | > | English (India) | `en-IN` | `WOMAN` only | > | English (UK) | `en-GB` | `WOMAN`, `MAN` | > | English (US) | `en-US` | `WOMAN`, `MAN` | > | French (Canada) | `fr-CA` | `WOMAN` only | > | French (France) | `fr-FR` | `WOMAN`, `MAN` | > | German (Germany) | `de-DE` | `WOMAN`, `MAN` | > | Hindi (India) | `hi-IN` | `WOMAN` only | > | Italian (Italy) | `it-IT` | `WOMAN`, `MAN` | > | Japanese (Japan) | `ja-JP` | `WOMAN`, `MAN` | > | Korean (South Korea) | `ko-KR` | `WOMAN` only | > | Portuguese (Brazil) | `pt-BR` | `WOMAN`, `MAN` | > | Portuguese (Portugal) | `pt-PT` | `WOMAN`, `MAN` | > | Russian (Russia) | `ru-RU` | `WOMAN`, `MAN` | > | Spanish (Mexico) | `es-MX` | `WOMAN` only | > | Spanish (Spain) | `es-ES` | `WOMAN`, `MAN` | > | Spanish (US) | `es-US` | `WOMAN`, `MAN` |"
+          "description": "If `true`, call and speech are mixed. Default: `true`. > [accordion] Supported Languages > > | Language | Code | Available Voices | > | - | - | - | > | Arabic | `arb` | `WOMAN` only | > | Chinese Mandarin | `cmn-CN` | `WOMAN` only | > | Danish (Denmark) | `da-DK` | `WOMAN`, `MAN` | > | Dutch (Netherlands) | `nl-NL` | `WOMAN`, `MAN` | > | English (Australia) | `en-AU` | `WOMAN`, `MAN` | > | English (India) | `en-IN` | `WOMAN` only | > | English (UK) | `en-GB` | `WOMAN`, `MAN` | > | English (US) | `en-US` | `WOMAN`, `MAN` | > | French (Canada) | `fr-CA` | `WOMAN` only | > | French (France) | `fr-FR` | `WOMAN`, `MAN` | > | German (Germany) | `de-DE` | `WOMAN`, `MAN` | > | Hindi (India) | `hi-IN` | `WOMAN` only | > | Italian (Italy) | `it-IT` | `WOMAN`, `MAN` | > | Japanese (Japan) | `ja-JP` | `WOMAN`, `MAN` | > | Korean (South Korea) | `ko-KR` | `WOMAN` only | > | Portuguese (Brazil) | `pt-BR` | `WOMAN`, `MAN` | > | Portuguese (Portugal) | `pt-PT` | `WOMAN`, `MAN` | > | Russian (Russia) | `ru-RU` | `WOMAN`, `MAN` | > | Spanish (Mexico) | `es-MX` | `WOMAN` only | > | Spanish (Spain) | `es-ES` | `WOMAN`, `MAN` | > | Spanish (US) | `es-US` | `WOMAN`, `MAN` |"
         }
       ],
       "module": "call.make",
