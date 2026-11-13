@@ -400,6 +400,18 @@ describe("confirmation", () => {
     expect(sent).toEqual([SENT_SMS]);
   });
 
+  it("asks before a read that costs money, then sends it to the proxy's Lookup path", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const args = { id: "GET lookup.plivo.com/v1/Number/{PhoneNumber}", path_params: { PhoneNumber: "14155550100" }, params: { type: "carrier" } };
+    const preview = (await call(client, "plivo_api_read", args)).parsed as { status: string; confirmation_code: string };
+    expect(preview.status).toBe("confirmation_required");
+    expect(sent).toHaveLength(0);
+
+    expect((await call(client, "plivo_api_read", { ...args, confirmation_code: preview.confirmation_code })).isError).toBe(false);
+    expect(sent).toEqual([{ url: `${API}/v1/Lookup/Number/14155550100?type=carrier`, method: "GET", auth: STK, body: undefined }]);
+  });
+
   it("a code approves only that request, for that caller, while it is fresh", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);

@@ -43,7 +43,7 @@ function describe(op: Operation) {
     call_with: op.method === "GET" ? "plivo_api_read" : "plivo_api_write",
     costs_money: op.costs_money,
     destructive: op.destructive,
-    needs_approval: op.method === "GET" ? [] : approvalReasons(op),
+    needs_approval: approvalReasons(op),
     path_params: op.path_params ?? [],
     params: op.params,
     fixed_query: op.fixed_query,
@@ -58,9 +58,8 @@ const callInput = z.object({
     .optional()
     .describe('Values for the {placeholders} in the path, e.g. {"message_uuid": "…"}. {auth_id} is filled in for you.'),
   params: z.record(z.string(), z.unknown()).optional().describe("Query params (GET) or JSON body fields (other methods), as listed by plivo_api_details"),
+  confirmation_code: confirmationCodeField,
 });
-
-const writeInput = callInput.extend({ confirmation_code: confirmationCodeField });
 
 export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpServer {
   const server = new McpServer(
@@ -78,12 +77,12 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
 
-  async function call(kind: "read" | "write", args: z.infer<typeof writeInput>, reqCtx: ServerContext) {
+  async function call(kind: "read" | "write", args: z.infer<typeof callInput>, reqCtx: ServerContext) {
     const op = getOperation(args.id);
     if (!op) return text(`Unknown operation "${args.id}". Use plivo_api_search to find a valid id.`, true);
     if (kind === "read" && op.method !== "GET") return text(`${op.id} changes data; call it with plivo_api_write.`, true);
     if (kind === "write" && op.method === "GET") return text(`${op.id} is read-only; call it with plivo_api_read.`, true);
-    const reasons = kind === "write" ? approvalReasons(op) : [];
+    const reasons = approvalReasons(op);
     const needsConfirmation = reasons.length > 0;
     if (needsConfirmation && config.confirmationMode === "block") {
       return text(`${op.id} needs the user's approval (${reasons.join(" ")}), and this server is set to refuse such actions. Do it in the Plivo console instead.`, true);
@@ -172,7 +171,9 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     "plivo_api_read",
     {
       title: "Call a read-only Plivo API operation",
-      description: "Call a GET operation from the catalog (list or retrieve messages, calls, numbers, recordings, and more).",
+      description:
+        "Call a GET operation from the catalog (list or retrieve messages, calls, numbers, recordings, and more). " +
+        "Lookups that cost money need the user's approval first; plivo_api_details lists them as needs_approval.",
       inputSchema: callInput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -187,7 +188,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "Call a POST, PATCH or DELETE operation from the catalog. Operations that cost money (sending messages, " +
         "making calls, buying numbers), cannot be undone, create SIP access, reroute calls and messages or change an AI " +
         "agent need the user's approval first; plivo_api_details lists the reasons as needs_approval.",
-      inputSchema: writeInput,
+      inputSchema: callInput,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     async (args, reqCtx) => call("write", args, reqCtx),

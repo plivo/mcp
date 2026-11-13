@@ -8,7 +8,10 @@ import (
 )
 
 const (
-	apiHost       = "api.plivo.com"
+	apiHost    = "api.plivo.com"
+	lookupHost = "lookup.plivo.com"
+	// lookupPrefix is where the auth proxy serves the Lookup API; it forwards to lookupHost's /v1/.
+	lookupPrefix  = "/v1/Lookup/"
 	accountPrefix = "/v1/Account/{auth_id}"
 )
 
@@ -78,7 +81,9 @@ type OpOverride struct {
 	Include    *bool  `json:"include,omitempty"`
 	CostsMoney *bool  `json:"costs_money,omitempty"`
 	Module     string `json:"module,omitempty"`
-	Reason     string `json:"reason"`
+	// Description replaces the docs' when they do not say how to use the op, e.g. which id it takes.
+	Description string `json:"description,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 // Review collects everything a person must read before trusting the catalog.
@@ -110,7 +115,7 @@ var existingModules = map[string]bool{
 // moduleArea maps the first path segment under /v1/Account/{auth_id}/ to a consent area.
 var moduleArea = map[string]string{
 	"": "account", "Subaccount": "account", "UsageSummary": "account", "JWT": "account", "SipAuth": "account",
-	"Message": "message", "Media": "message", "Powerpack": "message", "10dlc": "message", "Profile": "message",
+	"Message": "message", "Media": "message", "Powerpack": "message", "NumberPool": "message", "10dlc": "message", "Profile": "message",
 	"TollfreeVerification": "message", "WhatsApp": "message",
 	"Call": "call", "Conference": "call", "MultiPartyCall": "call", "Recording": "call", "Transcription": "call",
 	"Request": "call", "Masking": "call", "VerifiedCallerId": "call",
@@ -122,6 +127,9 @@ var moduleArea = map[string]string{
 // module names follow the auth proxy's existing ones: message writes that send are message.send, every
 // call-control write is call.make.
 func moduleFor(method, rel string) string {
+	if strings.HasPrefix(rel, lookupPrefix) {
+		return "number.read"
+	}
 	segs := splitPath(rel)
 	first := ""
 	if len(segs) > 0 {
@@ -157,6 +165,7 @@ var costRules = []costRule{
 	{"POST", regexp.MustCompile(`^/Transcription/[^/]+/$`), "transcription is billed"},
 	{"POST", regexp.MustCompile(`/Record/$`), "recording may enable billed transcription"},
 	{"POST", regexp.MustCompile(`^/MultiPartyCall/[^/]+/Participant/$`), "dials a participant"},
+	{"GET", regexp.MustCompile(`^/v1/Lookup/`), "the docs price a lookup at USD 0.004"},
 }
 
 // pricingToConfirm are writes whose billing the docs do not state. They are flagged as costing money
@@ -280,6 +289,11 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 	for _, id := range sortedKeys(best) {
 		d := best[id]
 		rel, routable := relPath(d.Host, d.Path)
+		path := accountPrefix + rel
+		if d.Host == lookupHost && strings.HasPrefix(d.Path, "/v1/") {
+			path = lookupPrefix + strings.TrimPrefix(d.Path, "/v1/")
+			rel, routable = path, true
+		}
 		var cli []*CLIUse
 		if routable {
 			cli = inv.Covers(d.Method, rel)
@@ -293,7 +307,7 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 		}
 
 		op := Operation{
-			ID: id, Method: d.Method, Path: accountPrefix + rel, FixedQuery: d.FixedQuery,
+			ID: id, Method: d.Method, Path: path, FixedQuery: d.FixedQuery,
 			Title: d.Title, Section: d.Section, Description: d.Description,
 			Group: docsGroup(d.Page), DocsURL: d.Page, Params: []Param{},
 			Destructive: d.Method == "DELETE",
@@ -356,6 +370,9 @@ func Build(docOps []DocOp, anomalies []Anomaly, inv *CLIInventory, ov *Overrides
 			}
 			if o.Module != "" {
 				op.Module = o.Module
+			}
+			if o.Description != "" {
+				op.Description = o.Description
 			}
 		}
 		if include && (!routable || op.Module == "") {

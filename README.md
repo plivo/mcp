@@ -28,10 +28,11 @@ catalog, and the Worker refuses to start if a listed operation or param is missi
 
 ## Confirmation
 
-Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
-approval, whichever tool makes them (`src/confirm.ts`). So do 16 free writes that keep working after the token
-is revoked or send traffic elsewhere: SIP endpoints, credentials, IP lists and trunks, origination URIs,
-creating an application, pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
+Calls that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
+approval, whichever tool makes them (`src/confirm.ts`); that includes the number and caller-name lookups, which only
+read. So do free writes that keep working after the token is revoked or send traffic elsewhere: SIP endpoints,
+credentials, IP lists and trunks, origination URIs, creating an application, pointing a number, application or
+Powerpack somewhere new, adding a number to a Powerpack, changing an AI agent, and transferring a live call (`ASKS_FIRST` in
 `src/confirm.ts`). The preview hides any field named like a password or secret. The first call sends nothing and returns
 `confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
 caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
@@ -77,7 +78,7 @@ cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<
 - Plivo's docs export (`llms-full.txt`): params, types, required flags, descriptions
 - plivo-cli's source: which endpoints to expose (the CLI's surface) and which spend money (`guardSpend`)
 - `catalog/overrides.json`: reviewed decisions, each with a reason, and `extra_ops`: operations the CLI calls that the
-  docs do not describe (the Agents API), written from the CLI's commands and the server's validation
+  docs do not describe (the Agents API, CNAM lookups), written from the CLI's commands and the server's validation
 
 Each run also writes `catalog/REVIEW.md`: what was included and why, what was excluded, new scope modules
 the auth proxy needs, pricing to confirm, and param names where the docs and the SDKs disagree. The build fails on a
@@ -103,7 +104,8 @@ npm run typecheck
 
 To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.vars`, fill in `CONFIRM_SECRET`, and `npm run dev`, then
 point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
-Basic auth is for local development only; production accepts `stk_` tokens alone.
+Basic auth is for local development only; production accepts `stk_` tokens alone. Number lookups need the auth
+proxy's `/v1/Lookup/` route, so they fail under Basic auth.
 
 ## Not built yet
 

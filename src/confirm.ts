@@ -31,6 +31,7 @@ const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Number/{number}/": REROUTES,
   "POST /Powerpack/": REROUTES,
   "POST /Powerpack/{powerpack_uuid}/": REROUTES,
+  "POST /NumberPool/{number_pool_uuid}/Number/{number}/": REROUTES,
   "POST /Call/{call_uuid}/": MOVES_CALL,
   "POST /AgentFlow/": NEW_AGENT,
   "POST /AgentFlow/{agent_id}/": CHANGES_AGENT,
