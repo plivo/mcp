@@ -5,6 +5,7 @@ import {
   localhostAllowedOrigins,
   originValidationResponse,
 } from "@modelcontextprotocol/server";
+import { proxyApprovals } from "./approvals";
 import { createConfirmer } from "./confirm";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
@@ -167,7 +168,10 @@ export function createWorker(fetchImpl?: typeof fetch) {
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
-        confirmer: mode === "confirm" ? createConfirmer(env.CONFIRM_SECRET!) : undefined,
+        confirmer:
+          mode === "confirm"
+            ? createConfirmer(env.CONFIRM_SECRET!, env.PLIVO_LOGIN_BASE ? proxyApprovals(env.PLIVO_LOGIN_BASE, fetchImpl) : undefined)
+            : undefined,
         fetchImpl,
         onTokenRejected: () => {
           tokenRejected = true;

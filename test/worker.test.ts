@@ -687,6 +687,83 @@ describe("hardening", () => {
   });
 });
 
+const LOGIN = "http://127.0.0.1:8798";
+
+/** A Worker whose auth proxy also keeps the approvals; `consume` overrides the status it answers a spend with. */
+function setupWithProxy(consume?: () => number | Error) {
+  const sent: Sent[] = [];
+  const spent = new Set<string>();
+  const upstream = async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url) === `${LOGIN}/v1/accounts/cli/approvals/consume`) {
+      const forced = consume?.();
+      if (forced instanceof Error) throw forced;
+      const { id } = JSON.parse(String(init?.body)) as { id: string };
+      const status = forced ?? (spent.has(id) ? 409 : 200);
+      spent.add(id);
+      return new Response("{}", { status });
+    }
+    sent.push({ url: String(url), method: init?.method ?? "GET", auth: new Headers(init?.headers).get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ api_id: "x" }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const worker = createWorker(upstream as typeof fetch);
+  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+  const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
+  return { sent, spent, toWorker };
+}
+
+describe("an approval is spent once", () => {
+  const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
+
+  it("sends a request once however often its confirmation code comes back", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    const again = await call(client, "send_sms", { ...SMS, confirmation_code: code });
+    expect(again.isError).toBe(true);
+    expect(again.raw).toContain("already used");
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("gives two approvals of the same request different ids, so each sends once", async () => {
+    const { toWorker, sent, spent } = setupWithProxy();
+    const client = await connect(toWorker);
+    for (let i = 0; i < 2; i++) {
+      const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+      expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    }
+    expect(spent.size).toBe(2);
+    expect(writes(sent)).toHaveLength(2);
+  });
+
+  it("spends an approval given in the client's own dialog too", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const { client } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } }, { manual: true });
+    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    const answered = { name: "send_sms", arguments: SMS, inputResponses: { approve: { action: "accept", content: { approve: true } } }, requestState: first.requestState };
+    const retry = () => client.callTool(answered as never) as Promise<{ isError?: boolean; content: { text: string }[] }>;
+    expect((await retry()).isError).toBeFalsy();
+    const again = await retry();
+    expect(again.isError).toBe(true);
+    expect(again.content[0].text).toContain("already used");
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it.each<[string, () => number | Error, boolean]>([
+    ["a proxy without the endpoint yet (404) still sends", () => 404, true],
+    ["a proxy error refuses", () => 503, false],
+    ["a rejected token refuses", () => 401, false],
+    ["an unreachable proxy refuses", () => new Error("network"), false],
+  ])("%s", async (_, consume, sends) => {
+    const { toWorker, sent } = setupWithProxy(consume);
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: code });
+    expect(res.isError).toBe(!sends);
+    expect(writes(sent)).toHaveLength(sends ? 1 : 0);
+  });
+});
+
 type Answer = { action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> };
 
 async function connectWithDialog(toWorker: typeof fetch, answer: Answer, opts: { legacy?: boolean; manual?: boolean } = {}) {
