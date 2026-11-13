@@ -1,0 +1,77 @@
+name: Catalog refresh
+
+on:
+  schedule:
+    # Tuesday 03:30 UTC (09:00 IST), so the PR is waiting at the start of a working day.
+    - cron: "30 3 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: catalog-refresh
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BRANCH: bot/catalog-refresh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch the docs export and plivo-cli
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/llms-full.txt" https://docs.plivo.com/docs/llms-full.txt
+          git clone --quiet --depth 1 https://github.com/plivo/plivo-cli "$RUNNER_TEMP/plivo-cli"
+
+      # The generator parses plivo-cli's source, so it needs a Go at least as new as the one the CLI declares.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ runner.temp }}/plivo-cli/go.mod
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild the catalog
+        run: npm run catalog
+        env:
+          DOCS: ${{ runner.temp }}/llms-full.txt
+          PLIVO_CLI: ${{ runner.temp }}/plivo-cli
+
+      - name: Test
+        run: |
+          npm test
+          cd catalog/gen && go test ./...
+
+      - name: Open or update the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          rc=0
+          node .github/scripts/catalog-refresh.mjs check || rc=$?
+          if [ "$rc" = 10 ]; then
+            echo "Nothing changed beyond the source commits; no PR."
+            exit 0
+          fi
+          [ "$rc" = 0 ] || exit "$rc"
+          node .github/scripts/catalog-refresh.mjs body > "$RUNNER_TEMP/body.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --quiet -C "$BRANCH"
+          git add catalog/
+          git commit --quiet -m "chore(catalog): weekly rebuild on today's docs and plivo-cli"
+          git push --quiet --force origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" = OPEN ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "chore(catalog): weekly rebuild" --body-file "$RUNNER_TEMP/body.md"
+          fi
