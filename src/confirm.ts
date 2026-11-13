@@ -23,9 +23,12 @@ const CHANGES_AGENT = "This changes an AI agent, which may be live on calls and 
 const AGENT_LIVE = "This puts an AI agent live on calls and messages.";
 const AGENT_STOPS = "This stops a live AI agent from handling calls and messages.";
 const REMOVES_MEMBER = "This removes a member from a live conference.";
+const ACCOUNT_DETAILS = "This changes the account's own details, such as its name, address and timezone.";
+const PRESSES_KEYS = "This presses keypad digits on a live call, which can answer a menu or confirm something on the caller's behalf.";
+const CARRIER_FILING = "This files or changes a registration that carriers or regulators review, which can hold up or block numbers.";
 
-// Free, yet they outlive a revoked token, send traffic elsewhere, change what an AI agent does on live traffic or
-// cut someone off a live call, so a prompt injection could use them for lasting harm.
+// Free, yet they outlive a revoked token, send traffic elsewhere, change what an AI agent does on live traffic,
+// act on a live call, or change the account or its carrier filings, so a prompt injection could use them for lasting harm.
 const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Endpoint/": KEEPS_ACCESS,
   "POST /Endpoint/{endpoint_id}/": KEEPS_ACCESS,
@@ -49,6 +52,12 @@ const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /AgentFlow/{agent_id}/Resume/": AGENT_LIVE,
   "POST /AgentFlow/{agent_id}/Pause/": AGENT_STOPS,
   "POST /Conference/{conference_name}/Member/{member_id}/Kick/": REMOVES_MEMBER,
+  "POST /": ACCOUNT_DETAILS,
+  "POST /Call/{call_uuid}/DTMF/": PRESSES_KEYS,
+  "POST /10dlc/Campaign/{campaign_id}/Number/": CARRIER_FILING,
+  "POST /PhoneNumber/Compliance/Link/": CARRIER_FILING,
+  "PATCH /PhoneNumber/Compliance/{compliance_id}/": CARRIER_FILING,
+  "POST /TollfreeVerification/": CARRIER_FILING,
 };
 
 for (const id of Object.keys(ASKS_FIRST)) {

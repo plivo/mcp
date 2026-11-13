@@ -442,6 +442,12 @@ describe("confirmation", () => {
     ["POST /AgentFlow/{agent_id}/Publish/", { path_params: { agent_id: "a1" } }, "puts an AI agent live"],
     ["POST /AgentFlow/{agent_id}/Pause/", { path_params: { agent_id: "a1" } }, "stops a live AI agent"],
     ["POST /Conference/{conference_name}/Member/{member_id}/Kick/", { path_params: { conference_name: "c1", member_id: "7" } }, "removes a member from a live conference"],
+    ["POST /", { params: { city: "Austin" } }, "changes the account's own details"],
+    ["POST /Call/{call_uuid}/DTMF/", { path_params: { call_uuid: "c1" }, params: { digits: "1" } }, "presses keypad digits on a live call"],
+    ["POST /10dlc/Campaign/{campaign_id}/Number/", { path_params: { campaign_id: "C1" }, params: { numbers: ["14155550134"] } }, "carriers or regulators review"],
+    ["POST /PhoneNumber/Compliance/Link/", { params: { numbers: [{ number: "14155550134", compliance_application_id: "x" }] } }, "carriers or regulators review"],
+    ["PATCH /PhoneNumber/Compliance/{compliance_id}/", { path_params: { compliance_id: "x1" }, params: { callback_url: "https://example.com/c" } }, "carriers or regulators review"],
+    ["POST /TollfreeVerification/", { params: { number: "18335550134" } }, "carriers or regulators review"],
   ])("%s is free but asks first, and says why", async (id, args, why) => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -517,11 +523,12 @@ describe("confirmation", () => {
   it("sends other free writes without asking, and lists the reasons in details", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
-    const dtmf = await call(client, "plivo_api_write", { id: "POST /Call/{call_uuid}/DTMF/", path_params: { call_uuid: "c1" }, params: { digits: "1" } });
-    expect(dtmf.isError).toBe(false);
+    const mute = "POST /Conference/{conference_name}/Member/{member_id}/Mute/";
+    const muted = await call(client, "plivo_api_write", { id: mute, path_params: { conference_name: "c1", member_id: "7" } });
+    expect(muted.isError).toBe(false);
     expect(sent).toHaveLength(1);
     const details = (id: string) => call(client, "plivo_api_details", { id }).then((r) => (r.parsed as { needs_approval: string[] }).needs_approval);
-    expect(await details("POST /Call/{call_uuid}/DTMF/")).toEqual([]);
+    expect(await details(mute)).toEqual([]);
     expect(await details("POST /Application/{app_id}/")).toEqual(["This changes where this account's calls or messages are sent."]);
   });
 
@@ -606,6 +613,43 @@ describe("hardening", () => {
       ((await call(client, "send_sms", { src: "+14155550100", dst, text: "hi" })).parsed as { action: string }).action;
     expect(await preview("+14155550101<+14155550102<+14155550103")).toContain("3 recipients (dst).");
     expect(await preview("+14155550101")).not.toContain("recipients");
+  });
+
+  const sms = (extra: Record<string, unknown>) => ["send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi", ...extra }] as const;
+  const dial = (extra: Record<string, unknown>) =>
+    ["plivo_api_write", { id: "POST /Call/", params: { from: "14155550100", to: "14155550101", answer_url: "https://example.com/a", ...extra } }] as const;
+  const eleven = Array.from({ length: 11 }, (_, i) => `1415555${String(1000 + i)}`).join("<");
+
+  it.each<[string, readonly [string, Record<string, unknown>], string]>([
+    ["a destination that is not a number", sms({ dst: "abc" }), 'dst must be a phone number'],
+    ["a number too short to buy", ["buy_number", { number: "123" }], "number must be a phone number"],
+    ["more SMS recipients than one approval may reach", sms({ dst: eleven }), "dst has 11 destinations"],
+    ["more call destinations than one approval may reach", dial({ to: eleven }), "to has 11 destinations"],
+    ["a plain-http answer URL", dial({ answer_url: "http://example.com/a" }), "answer_url must start with https://"],
+    ["the cloud metadata address", dial({ answer_url: "https://169.254.169.254/latest/meta-data/" }), "not an internal address"],
+    ["a private address spelt as one number", dial({ hangup_url: "https://2130706433/x" }), "not an internal address"],
+    ["an IPv6 loopback callback", sms({ url: "https://[::1]/cb" }), "not an internal address"],
+    ["a v4-mapped IPv6 private address", sms({ url: "https://[::ffff:10.0.0.1]/cb" }), "not an internal address"],
+    ["a single-label host", dial({ fallback_url: "https://intranet/x" }), "not an internal address"],
+    ["a URL carrying a login", dial({ ring_url: `https://${["u", "p"].join(":")}@example.com/x` }), "must not carry a username or password"],
+    ["one bad URL in a media list", sms({ media_urls: ["https://example.com/a.png", "https://localhost/b.png"] }), "media_urls must point at a public host"],
+  ])("refuses %s before asking for approval", async (_, [tool, args], why) => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), tool, args);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain(why);
+    expect(res.raw).not.toContain("confirmation_code");
+    expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, readonly [string, Record<string, unknown>]]>([
+    ["ten recipients, a short-code sender and a public callback", sms({ src: "55512", dst: eleven.split("<").slice(1).join("<"), url: "https://hooks.example.com/s?x=1" })],
+    ["an alphanumeric sender ID", sms({ src: "PLIVO" })],
+    ["a SIP destination and a public IPv6 callback", dial({ to: "sip:alice@sip.example.com", hangup_url: "https://[2606:4700::1111]/h" })],
+    ["a wss stream target", ["plivo_api_write", { id: "POST /Call/{call_uuid}/Stream/", path_params: { call_uuid: "c1" }, params: { service_url: "wss://voice.example.com/s" } }]],
+  ])("still asks for approval of %s", async (_, [tool, args]) => {
+    const res = await call(await connect(setup().toWorker), tool, args);
+    expect(res.parsed).toMatchObject({ status: "confirmation_required" });
   });
 
   it.each<[string, Record<string, unknown>]>([
