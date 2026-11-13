@@ -645,26 +645,50 @@ describe("hardening", () => {
 
 const LOGIN = "http://127.0.0.1:8798";
 
-/** A Worker whose auth proxy also keeps the approvals; `consume` overrides the status it answers a spend with. */
-function setupWithProxy(consume?: () => number | Error) {
+/**
+ * A Worker whose auth proxy also keeps the approvals. `consume` overrides the status it answers a spend with;
+ * `links` gives it the approval-link routes, and `decide` plays the user on the console page.
+ */
+function setupWithProxy(consume?: () => number | Error, links = false) {
   const sent: Sent[] = [];
   const spent = new Set<string>();
+  const pending = new Map<string, { digest: string; action: string; status: string; auth: string | null }>();
+  const base = `${LOGIN}/v1/accounts/cli/approvals`;
+  const json = (status: number, data: unknown = {}) => new Response(JSON.stringify({ data }), { status, headers: { "Content-Type": "application/json" } });
   const upstream = async (url: string | URL | Request, init?: RequestInit) => {
-    if (String(url) === `${LOGIN}/v1/accounts/cli/approvals/consume`) {
+    const u = String(url);
+    const auth = new Headers(init?.headers).get("Authorization");
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (u === `${base}/consume`) {
       const forced = consume?.();
       if (forced instanceof Error) throw forced;
-      const { id } = JSON.parse(String(init?.body)) as { id: string };
-      const status = forced ?? (spent.has(id) ? 409 : 200);
-      spent.add(id);
-      return new Response("{}", { status });
+      const status = forced ?? (spent.has(body.id) ? 409 : 200);
+      spent.add(body.id);
+      return json(status);
     }
-    sent.push({ url: String(url), method: init?.method ?? "GET", auth: new Headers(init?.headers).get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (u === base) {
+      if (!links) return json(404);
+      const id = `approval-${pending.size + 1}`;
+      pending.set(id, { digest: body.digest, action: body.action, status: "pending", auth });
+      return json(201, { id, url: `https://console.test/mcp/approve?id=${id}` });
+    }
+    if (u.startsWith(`${base}/`)) {
+      const id = u.slice(base.length + 1).replace(/\/redeem$/, "");
+      const p = pending.get(id);
+      if (!p || p.digest !== body.digest || p.auth !== auth) return json(404);
+      if (p.status !== "pending") pending.delete(id);
+      return json(200, { status: p.status });
+    }
+    sent.push({ url: u, method: init?.method ?? "GET", auth, body });
     return new Response(JSON.stringify({ api_id: "x" }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   const worker = createWorker(upstream as typeof fetch);
   const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
   const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
-  return { sent, spent, toWorker };
+  const decide = (status: "approved" | "denied") => {
+    for (const p of pending.values()) p.status = status;
+  };
+  return { sent, spent, pending, decide, toWorker };
 }
 
 describe("an approval is spent once", () => {
@@ -717,6 +741,77 @@ describe("an approval is spent once", () => {
     const res = await call(client, "send_sms", { ...SMS, confirmation_code: code });
     expect(res.isError).toBe(!sends);
     expect(writes(sent)).toHaveLength(sends ? 1 : 0);
+  });
+});
+
+describe("approval on a Plivo console page, for a client with no approval dialog", () => {
+  const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
+  type Asked = { status: string; action: string; approval_url: string; confirmation_code: string };
+  const ask = async (client: Client) => (await call(client, "send_sms", SMS)).parsed as Asked;
+
+  it("gives the model a link, and sends only after the user approves there", async () => {
+    const { toWorker, sent, pending, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    expect(asked).toMatchObject({ status: "approval_required", approval_url: "https://console.test/mcp/approve?id=approval-1" });
+    expect([...pending.values()][0].action).toBe(asked.action);
+    expect(asked.action).toContain('dst: "+14155550101"');
+
+    const early = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(early.isError).toBe(true);
+    expect(early.raw).toContain("has not approved");
+    expect(writes(sent)).toHaveLength(0);
+
+    decide("approved");
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code })).isError).toBe(false);
+    const again = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(again.raw).toContain("expired or was already used");
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("sends nothing when the user denies it", async () => {
+    const { toWorker, sent, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    decide("denied");
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("denied");
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("does not let an approval for one request, or one caller, send another", async () => {
+    const { toWorker, sent, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    decide("approved");
+    const other = await connect(toWorker, "Bearer stk_" + "b".repeat(32));
+    expect((await call(client, "send_sms", { ...SMS, text: "something else", confirmation_code: asked.confirmation_code })).isError).toBe(true);
+    expect((await call(other, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code })).isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("refuses when the approval cannot be set up, and keeps the code where the proxy has no such route", async () => {
+    const down = setupWithProxy(undefined, true);
+    const brokenFetch = async (input: string | URL | Request, init?: RequestInit) => down.toWorker(input, init);
+    down.pending.set = () => {
+      throw new Error("store down");
+    };
+    const res = await call(await connect(brokenFetch), "send_sms", SMS);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("could not be set up");
+
+    const old = setupWithProxy();
+    expect((await call(await connect(old.toWorker), "send_sms", SMS)).parsed).toMatchObject({ status: "confirmation_required" });
+  });
+
+  it("still asks in the client's own dialog when it has one", async () => {
+    const { toWorker, sent, pending } = setupWithProxy(undefined, true);
+    const { client, asked } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } });
+    expect((await call(client, "send_sms", SMS)).isError).toBe(false);
+    expect(asked).toHaveLength(1);
+    expect(pending.size).toBe(0);
+    expect(writes(sent)).toHaveLength(1);
   });
 });
 
