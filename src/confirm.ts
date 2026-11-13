@@ -91,11 +91,84 @@ export async function requestDigest(req: BuiltRequest): Promise<string> {
   return btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-const MAX_FIELDS = 12;
-const MAX_VALUE_CHARS = 200;
+// The user approves what they see, so nothing is cut short; a preview too long to read is refused instead.
+const MAX_PREVIEW_CHARS = 8_000;
 const PLAIN_KEY = /^[A-Za-z0-9_.[\]-]+$/;
-// The preview lands in the chat transcript; like the CLI, never print a password back.
-const HIDDEN_FIELD = /password|secret/i;
+
+// The preview lands in the chat transcript, so it hides what cx-core hides when it returns an agent
+// (usecases/agent_management.py): secret-named fields at any depth, unparseable JSON-encoded credential
+// fields and URL credentials. Like the CLI, it never prints a password back.
+const SECRET_KEY = new RegExp(["token", "password", "secret", "api[_-]?key", "authorization", "cookie"].join("|"), "i");
+const JSON_SECRET_FIELDS = new Set(["headers", "params", "body", "auth_params", "http_headers", "http_params", "http_body_template"]);
+const WHOLE_TEMPLATE = /^\{\{[^{}]*\}\}$/;
+const MAX_DEPTH = 50;
+
+const hide = (s: string) => `(hidden, ${s.length} characters)`;
+
+function decoded(s: string): string {
+  try {
+    return decodeURIComponent(s.replaceAll("+", " "));
+  } catch {
+    return s;
+  }
+}
+
+function hideUrlCredentials(s: string): string {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/is.exec(s);
+  if (!m) return s;
+  let authority = m[2];
+  const at = authority.lastIndexOf("@");
+  const colon = at > 0 ? authority.slice(0, at).indexOf(":") : -1;
+  if (colon >= 0) authority = `${authority.slice(0, colon)}:(hidden)${authority.slice(at)}`;
+  return m[1] + authority + m[3] + hideQuerySecrets(m[4] ?? "") + (m[5] ?? "");
+}
+
+function hideQuerySecrets(query: string): string {
+  if (!query) return query;
+  const pairs = query.slice(1).split("&").map((pair) => {
+    const eq = pair.indexOf("=");
+    const name = pair.slice(0, eq);
+    const value = pair.slice(eq + 1);
+    return eq > 0 && value && SECRET_KEY.test(decoded(name)) && !WHOLE_TEMPLATE.test(decoded(value)) ? `${name}=(hidden)` : pair;
+  });
+  return `?${pairs.join("&")}`;
+}
+
+function mapObject(o: object, f: (v: unknown, k: string) => unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null);
+  for (const [k, v] of Object.entries(o)) out[k] = f(v, k);
+  return out;
+}
+
+// Under a secret-named key the whole value is the secret; numbers and booleans stay, as in `token_expiry: 3600`.
+function hideAll(v: unknown, depth: number): unknown {
+  if (depth > MAX_DEPTH) return "(hidden)";
+  if (typeof v === "string") return v ? hide(v) : v;
+  if (Array.isArray(v)) return v.map((x) => hideAll(x, depth + 1));
+  if (v !== null && typeof v === "object") return mapObject(v, (x) => hideAll(x, depth + 1));
+  return v;
+}
+
+function redact(v: unknown, key: string, depth: number): unknown {
+  if (depth > MAX_DEPTH) return "(hidden)";
+  if (Array.isArray(v)) return v.map((x) => redact(x, key, depth + 1));
+  if (v !== null && typeof v === "object") {
+    return mapObject(v, (x, k) => (SECRET_KEY.test(k) ? hideAll(x, depth + 1) : redact(x, k, depth + 1)));
+  }
+  if (typeof v !== "string" || !v) return v;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed !== null && typeof parsed === "object") {
+    const r = redact(parsed, key, depth + 1);
+    return canonical(r) === canonical(parsed) ? v : JSON.stringify(r);
+  }
+  if (JSON_SECRET_FIELDS.has(key) && !(v.includes("{{") && v.includes("}}"))) return hide(v);
+  return hideUrlCredentials(v);
+}
 
 /**
  * The plain-text description of the action the user is asked to approve. The model controls the argument
@@ -105,21 +178,20 @@ const HIDDEN_FIELD = /password|secret/i;
 export function describeAction(op: Operation, req: BuiltRequest): string {
   const u = new URL(req.url);
   const path = u.pathname.replace(/^.*\/v1\/Account\/[^/]+/, "") || "/";
-  const lines = [`${op.title} (${op.method} ${path}${u.search})`, ...approvalReasons(op)];
+  const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)})`, ...approvalReasons(op)];
   if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
   const rank = new Map(op.params.map((p, i) => [p.name, p.required ? i : op.params.length + i]));
   const unranked = 2 * op.params.length;
   const names = Object.keys(body).sort((a, b) => (rank.get(a) ?? unranked) - (rank.get(b) ?? unranked) || (a < b ? -1 : a > b ? 1 : 0));
-  for (const k of names.slice(0, MAX_FIELDS)) {
-    const s = JSON.stringify(body[k]) ?? "null";
-    const shown = HIDDEN_FIELD.test(k)
-      ? `(hidden, ${typeof body[k] === "string" ? body[k].length : s.length} characters)`
-      : s.length > MAX_VALUE_CHARS ? `${s.slice(0, MAX_VALUE_CHARS)}… (${s.length} characters)` : s;
-    lines.push(`${PLAIN_KEY.test(k) ? k : JSON.stringify(k)}${rank.has(k) ? "" : " (not a documented param)"}: ${shown}`);
+  for (const k of names) {
+    const v = body[k];
+    const shown = !SECRET_KEY.test(k)
+      ? JSON.stringify(redact(v, k, 0))
+      : typeof v === "string" ? hide(v) : JSON.stringify(hideAll(v, 0));
+    lines.push(`${PLAIN_KEY.test(k) ? k : JSON.stringify(k)}${rank.has(k) ? "" : " (not a documented param)"}: ${shown ?? "null"}`);
   }
-  if (names.length > MAX_FIELDS) lines.push(`…and ${names.length - MAX_FIELDS} more fields`);
   return lines.join("\n");
 }
 
@@ -148,12 +220,23 @@ export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operatio
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 
+  const action = describeAction(op, req);
+  if (action.length > MAX_PREVIEW_CHARS) {
+    return {
+      approved: false,
+      result: textResult(
+        `Nothing was done: this action is ${action.length} characters, too long to show the user for approval (the limit is ` +
+          `${MAX_PREVIEW_CHARS}). Make the change in smaller steps if the operation allows it, or in the Plivo console.`,
+        true,
+      ),
+    };
+  }
   return {
     approved: false,
     result: textResult({
       status: "confirmation_required",
       nothing_done_yet: true,
-      action: describeAction(op, req),
+      action,
       confirmation_code: await c.code.mint({ d }, ctx),
       expires_in_seconds: CODE_TTL_SECONDS,
       instructions:

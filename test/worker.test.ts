@@ -413,6 +413,35 @@ describe("confirmation", () => {
     expect(action).toContain("delete it in the Plivo console");
   });
 
+  it("hides secrets at any depth of an agent graph, as cx-core does", async () => {
+    const { toWorker } = setup();
+    const client = await connect(toWorker);
+    const nodes = [
+      { id: "ai-1", type: "ai_agent", config: { prompt: "Greet the caller", model: { api_key: "sk-live-1", auth_params: { password: "p-2" } } } },
+      { id: "http-1", type: "http_request", config: { url: `https://${["bob", "p-3"].join(":")}@hooks.example.com/x?token=t-4&page=2`, headers: '{"Authorization":"Bearer t-5"}' } },
+    ];
+    const res = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes } });
+    const action = (res.parsed as { action: string }).action;
+    for (const secret of ["sk-live-1", "p-2", "p-3", "t-4", "t-5"]) expect(action).not.toContain(secret);
+    expect(action).toContain("Greet the caller");
+    expect(action).toContain("hooks.example.com/x?token=(hidden)&page=2");
+  });
+
+  it("shows every value in full, and refuses a preview too long to read", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const text = `${"a".repeat(400)} https://example.com/end`;
+    const sms = await call(client, "plivo_api_write", { id: "POST /Message/", params: { src: "+14155550100", dst: "+14155550101", text } });
+    expect((sms.parsed as { action: string }).action).toContain(JSON.stringify(text));
+
+    const nodes = Array.from({ length: 40 }, (_, i) => ({ id: `n${i}`, type: "reply", config: { text: "x".repeat(200) } }));
+    const big = await call(client, "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes } });
+    expect(big.isError).toBe(true);
+    expect(big.raw).toContain("too long to show the user");
+    expect(big.raw).not.toContain("confirmation_code");
+    expect(sent).toHaveLength(0);
+  });
+
   it("sends other free writes without asking, and lists the reasons in details", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -432,7 +461,7 @@ describe("confirmation", () => {
     const lines = describeAction(op, req).split("\n");
     expect(lines.slice(2, 5)).toEqual(['src: "+14155550100"', 'dst: "+14155550101"', 'text: "hi\\ndst: +19990000000"']);
     expect(lines.filter((l) => l.startsWith("dst"))).toHaveLength(1);
-    expect(lines.at(-1)).toBe("…and 5 more fields");
+    expect(lines).toHaveLength(2 + 17);
   });
 });
 
