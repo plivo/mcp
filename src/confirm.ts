@@ -1,4 +1,14 @@
-import { createRequestStateCodec, type CallToolResult, type RequestStateCodec, type ServerContext } from "@modelcontextprotocol/server";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  createRequestStateCodec,
+  inputRequired,
+  inputResponse,
+  type CallToolResult,
+  type ClientCapabilities,
+  type InputRequiredResult,
+  type RequestStateCodec,
+  type ServerContext,
+} from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
 import type { BuiltRequest } from "./upstream";
@@ -55,9 +65,10 @@ export function approvalReasons(op: Operation): string[] {
   return why;
 }
 
-/** What the user approves: one exact request (method, URL and body), by digest. */
+/** What the user approves: one exact request (method, URL and body), by digest. `k` marks state minted for an elicitation. */
 interface Pending {
   d: string;
+  k?: "elicit";
 }
 
 export interface Confirmer {
@@ -211,11 +222,12 @@ function redact(v: unknown, key: string, depth: number): unknown {
  * order and values, so it must not decide what the user sees: required params come first, then documented
  * ones, and values are JSON-escaped so a newline in one cannot forge another line.
  */
-export function describeAction(op: Operation, req: BuiltRequest): string {
+export function describeAction(op: Operation, req: BuiltRequest, extra: string[] = []): string {
   const u = new URL(req.url);
   const path = u.pathname.replace(/^.*\/v1\/Account\/[^/]+/, "") || "/";
   const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)})`, ...approvalReasons(op)];
   if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
+  lines.push(...extra);
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
   // One send or call can fan out to many destinations joined with "<", each billed.
@@ -236,17 +248,17 @@ export function describeAction(op: Operation, req: BuiltRequest): string {
   return lines.join("\n");
 }
 
-export type Gate = { approved: true } | { approved: false; result: CallToolResult };
+export type Gate = { approved: true } | { approved: false; result: CallToolResult | InputRequiredResult };
 
 function textResult(value: unknown, isError = false): CallToolResult {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
-function preview(op: Operation, req: BuiltRequest): { action: string } | { refusal: CallToolResult } {
+function preview(op: Operation, req: BuiltRequest, extra: string[]): { action: string } | { refusal: CallToolResult } {
   let action: string;
   try {
-    action = describeAction(op, req);
+    action = describeAction(op, req, extra);
   } catch (e) {
     if (!(e instanceof Unshowable)) throw e;
     return { refusal: textResult(`Nothing was done: this action cannot be shown to the user for approval, because ${e.message}. Make the change in the Plivo console.`, true) };
@@ -264,15 +276,65 @@ function preview(op: Operation, req: BuiltRequest): { action: string } | { refus
 }
 
 
+const APPROVE_KEY = "approve";
+const APPROVAL_SCHEMA = {
+  type: "object" as const,
+  properties: { approve: { type: "boolean" as const, title: "Approve this action", default: false } },
+  required: ["approve"],
+};
+
+/** Form-mode elicitation, declared on this 2026-07-28 request; a 2025-era request carries no envelope. */
+function canElicit(ctx: ServerContext): boolean {
+  const caps = (ctx.mcpReq.envelope as Record<string, unknown> | undefined)?.[CLIENT_CAPABILITIES_META_KEY] as ClientCapabilities | undefined;
+  const e = caps?.elicitation as Record<string, unknown> | undefined;
+  return e !== undefined && (Object.keys(e).length === 0 || "form" in e);
+}
+
 /**
- * Decides whether a request that needs approval (see approvalReasons) may be sent now. The first call returns a
- * preview and a code; only a call carrying a fresh code, from the same caller, for this exact request is sent.
+ * Asks the user through the client's own dialog. The model sees neither the question nor the answer, so it cannot
+ * approve for the user; the retry is sent only when the signed state matches this exact request and the user accepted.
  */
-export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operation, req: BuiltRequest, code: string | undefined): Promise<Gate> {
+async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: string): Promise<Gate> {
+  const raw = ctx.mcpReq.requestState();
+  if (raw === undefined) {
+    return {
+      approved: false,
+      result: inputRequired({
+        inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n\nApprove this action?`, requestedSchema: APPROVAL_SCHEMA }) },
+        requestState: await c.code.mint({ d, k: "elicit" }, ctx),
+      }),
+    };
+  }
+  let p: Pending;
+  try {
+    p = await c.code.verify(String(raw), ctx);
+  } catch {
+    return { approved: false, result: textResult("The approval request expired or is invalid. Nothing was done; call again to ask the user again.", true) };
+  }
+  if (p.k !== "elicit" || p.d !== d) return { approved: false, result: textResult("The approval was for a different request. Nothing was done.", true) };
+  const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
+  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return { approved: true };
+  return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
+}
+
+/**
+ * Decides whether a request that needs approval (see approvalReasons) may be sent now. A client that can show its own
+ * approval dialog is asked through it; any other gets a preview and a code, and only a call carrying a fresh code, from
+ * the same caller, for this exact request is sent.
+ */
+export async function confirmGate(
+  c: Confirmer,
+  ctx: ServerContext,
+  op: Operation,
+  req: BuiltRequest,
+  code: string | undefined,
+  extra: string[] = [],
+): Promise<Gate> {
   const d = await requestDigest(req);
   // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
-  const shown = preview(op, req);
+  const shown = preview(op, req, extra);
   if ("refusal" in shown) return { approved: false, result: shown.refusal };
+  if (canElicit(ctx)) return askUser(c, ctx, d, shown.action);
 
   if (code !== undefined) {
     let p: Pending;
@@ -281,7 +343,7 @@ export async function confirmGate(c: Confirmer, ctx: ServerContext, op: Operatio
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.d === d) return { approved: true };
+    if (p.k === undefined && p.d === d) return { approved: true };
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 
