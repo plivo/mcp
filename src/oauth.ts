@@ -184,6 +184,14 @@ function loginCookie(origin: URL, value: string, maxAge: number): string {
   return `${loginCookieName(origin)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
+/**
+ * The challenge for a token minted before the module a tool needs existed: MCP clients sign in again and retry the
+ * call. No scope is named, because a sign-in grants every module the MCP has, whatever is asked for.
+ */
+export function insufficientScopeChallenge(origin: string): string {
+  return `Bearer error="insufficient_scope", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
+}
+
 /** The WWW-Authenticate value that tells an MCP client where to start OAuth; error="invalid_token" for a token that stopped working. */
 export function resourceMetadataChallenge(origin: string, invalidToken = false): string {
   return `Bearer ${invalidToken ? 'error="invalid_token", ' : ""}resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
