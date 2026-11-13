@@ -103,7 +103,8 @@ export function buildRequest(op: Operation, args: CallArgs, cred: Credential, ba
   return {
     url: base.replace(/\/+$/, "") + path + (qs ? `?${qs}` : ""),
     method: op.method,
-    body: hasBody ? JSON.stringify(body) : undefined,
+    // Plivo refuses a bodiless write as not JSON, and the auth proxy forwards no Content-Type without a body.
+    body: hasBody ? JSON.stringify(body) : op.method === "GET" || op.method === "DELETE" ? undefined : "{}",
     warnings,
   };
 }

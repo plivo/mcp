@@ -20,7 +20,13 @@
     "GET /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
     "POST /Subaccount/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
     "POST /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
-    "DELETE /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" }
+    "DELETE /Subaccount/{subauth_id}/": { "include": false, "reason": "returns or manages sub-account auth_tokens, credentials that outlive the MCP's scope token" },
+    "DELETE /Conference/{conference_name}/Member/{member_id}/Mute/": { "destructive": false, "reason": "unmutes a member; muting again undoes it" },
+    "DELETE /Conference/{conference_name}/Member/{member_id}/Deaf/": { "destructive": false, "reason": "lets a member hear again; deafening again undoes it" },
+    "DELETE /Call/{call_uuid}/Play/": { "destructive": false, "reason": "stops audio playing on a live call; nothing is deleted" },
+    "DELETE /Call/{call_uuid}/Speak/": { "destructive": false, "reason": "stops text-to-speech on a live call; nothing is deleted" },
+    "DELETE /Conference/{conference_name}/Member/{member_id}/Play/": { "destructive": false, "reason": "stops audio playing to a member; nothing is deleted" },
+    "DELETE /Conference/{conference_name}/Member/{member_id}/Speak/": { "destructive": false, "reason": "stops text-to-speech to a member; nothing is deleted" }
   },
   "extra_ops": [
     {"method": "GET", "path": "/AgentFlow/", "title": "List Agents", "description": "List the AI agents (voice, chat and message agent flows) on this account.", "group": "agents", "source": "agent.go:runAgentList", "params": [{"name": "limit", "in": "query", "type": "integer", "description": "Results per page, 1 to 20. Defaults to 20."}, {"name": "offset", "in": "query", "type": "integer", "description": "Number of results to skip. Defaults to 0."}, {"name": "name", "in": "query", "type": "string", "description": "Filter by name (substring match)."}, {"name": "state", "in": "query", "type": "string", "description": "Filter by state: `DRAFT`, `ACTIVE` or `PAUSED`."}]},

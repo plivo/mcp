@@ -148,7 +148,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Call/{call_uuid}/Record/",
@@ -192,7 +192,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Call/{call_uuid}/Stream/",
@@ -292,7 +292,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Conference/{conference_name}/Member/{member_id}/Mute/",
@@ -320,7 +320,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Conference/{conference_name}/Member/{member_id}/Play/",
@@ -348,7 +348,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Conference/{conference_name}/Member/{member_id}/Speak/",
@@ -376,7 +376,7 @@
       "params": [],
       "module": "call.make",
       "costs_money": false,
-      "destructive": true
+      "destructive": false
     },
     {
       "id": "DELETE /Conference/{conference_name}/Record/",

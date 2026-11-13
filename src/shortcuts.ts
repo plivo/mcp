@@ -16,6 +16,8 @@ export interface ShortcutDef {
   describe?: Record<string, string>;
   /** Params of which at least one is needed, where the docs mark none of them required. */
   oneOf?: string[];
+  /** Documented ranges for integer params, so an out-of-range value is an error instead of a silent cap. */
+  bounds?: Record<string, { min?: number; max?: number }>;
 }
 
 export const SHORTCUT_DEFS: ShortcutDef[] = [
@@ -32,12 +34,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     id: "GET /Number/",
     description: "List the phone numbers on your account.",
     params: ["type", "number_startswith", "alias", "services", "subaccount", "limit", "offset"],
+    bounds: { limit: { min: 1, max: 20 }, offset: { min: 0 } },
   },
   {
     name: "search_numbers",
     id: "GET /PhoneNumber/",
     description: "Search phone numbers available to buy in a country. Buy one with buy_number.",
     params: ["country_iso", "type", "pattern", "region", "city", "services", "npanxx", "limit", "offset"],
+    bounds: { limit: { min: 1, max: 20 }, offset: { min: 0 } },
   },
   {
     name: "list_messages",
@@ -54,6 +58,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
       "limit",
       "offset",
     ],
+    bounds: { limit: { min: 1, max: 20 }, offset: { min: 0 } },
   },
   { name: "get_message", id: "GET /Message/{message_uuid}/", description: "Get one message by its UUID.", params: [] },
   {
@@ -63,6 +68,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
       "List completed calls. With no end_time filter Plivo searches only the last 7 days; for any other period pass " +
       "end_time__gt and/or end_time__lt (a range of at most 30 days, within the last 90).",
     params: ["from_number", "to_number", "call_direction", "end_time__gt", "end_time__lt", "hangup_cause_code", "limit", "offset"],
+    bounds: { limit: { min: 1, max: 20 }, offset: { min: 0 } },
   },
   { name: "get_call", id: "GET /Call/{call_uuid}/", description: "Get the record of one completed call by its UUID.", params: [] },
   {
@@ -77,6 +83,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     id: "POST /Call/",
     description: "Start an outbound call. answer_url must return Plivo XML that says what happens on the call.",
     params: ["from", "to", "answer_url", "answer_method", "hangup_url", "hangup_method", "caller_name", "time_limit", "ring_timeout", "machine_detection"],
+    // 14400 is the documented default, the 4-hour cap; ring_timeout has no documented maximum.
+    bounds: { time_limit: { min: 1, max: 14400 }, ring_timeout: { min: 1 } },
   },
   {
     name: "buy_number",
@@ -110,15 +118,19 @@ function resolveParam(op: Operation, name: string): Param {
   return p;
 }
 
-function field(p: Param, description = p.description, optional = !p.required): z.ZodType {
+function field(p: Param, description = p.description, optional = !p.required, range?: { min?: number; max?: number }): z.ZodType {
   let f: z.ZodType;
   switch (p.type) {
     case "string":
       f = optional ? z.string() : z.string().min(1);
       break;
-    case "integer":
-      f = z.number().int();
+    case "integer": {
+      let n = z.number().int();
+      if (range?.min !== undefined) n = n.min(range.min);
+      if (range?.max !== undefined) n = n.max(range.max);
+      f = n;
       break;
+    }
     case "boolean":
       f = z.boolean();
       break;
@@ -149,12 +161,13 @@ export function buildShortcuts(defs: ShortcutDef[]): Shortcut[] {
       shape[p.name] = z.union([z.string().min(1), z.number()]).describe(p.description ?? `The ${p.name.replaceAll("_", " ")}.`);
     }
     const oneOf = def.oneOf ?? [];
-    for (const name of [...Object.keys(def.describe ?? {}), ...oneOf]) {
+    for (const name of [...Object.keys(def.describe ?? {}), ...oneOf, ...Object.keys(def.bounds ?? {})]) {
       if (!def.params.includes(name)) throw new Error(`shortcut ${def.name}: ${name} is not one of its params`);
     }
     for (const name of def.params) {
       const p = resolveParam(op, name);
-      shape[name] = field(p, def.describe?.[name] ?? p.description, !p.required || oneOf.includes(name));
+      if (def.bounds?.[name] && p.type !== "integer") throw new Error(`shortcut ${def.name}: bounds on ${name}, which is not an integer`);
+      shape[name] = field(p, def.describe?.[name] ?? p.description, !p.required || oneOf.includes(name), def.bounds?.[name]);
     }
     const kind = op.method === "GET" ? "read" : "write";
     const confirmable = kind === "write" && (op.costs_money || op.destructive);

@@ -12,9 +12,10 @@ const NEW_AGENT = "This creates an AI agent on this account.";
 const CHANGES_AGENT = "This changes an AI agent, which may be live on calls and messages.";
 const AGENT_LIVE = "This puts an AI agent live on calls and messages.";
 const AGENT_STOPS = "This stops a live AI agent from handling calls and messages.";
+const REMOVES_MEMBER = "This removes a member from a live conference.";
 
-// Free and undoable, yet they outlive a revoked token, send traffic elsewhere or change what an AI agent does
-// on live traffic, so a prompt injection could use them for lasting harm.
+// Free, yet they outlive a revoked token, send traffic elsewhere, change what an AI agent does on live traffic or
+// cut someone off a live call, so a prompt injection could use them for lasting harm.
 const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /Endpoint/": KEEPS_ACCESS,
   "POST /Endpoint/{endpoint_id}/": KEEPS_ACCESS,
@@ -37,6 +38,7 @@ const ASKS_FIRST: Readonly<Record<string, string>> = {
   "POST /AgentFlow/{agent_id}/Publish/": AGENT_LIVE,
   "POST /AgentFlow/{agent_id}/Resume/": AGENT_LIVE,
   "POST /AgentFlow/{agent_id}/Pause/": AGENT_STOPS,
+  "POST /Conference/{conference_name}/Member/{member_id}/Kick/": REMOVES_MEMBER,
 };
 
 for (const id of Object.keys(ASKS_FIRST)) {
@@ -216,6 +218,11 @@ export function describeAction(op: Operation, req: BuiltRequest): string {
   if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
+  // One send or call can fan out to many destinations joined with "<", each billed.
+  for (const k of ["dst", "to"]) {
+    const n = typeof body[k] === "string" ? (body[k] as string).split("<").filter((d) => d.trim()).length : 0;
+    if (n > 1) lines.push(`${n} recipients (${k}).`);
+  }
   const rank = new Map(op.params.map((p, i) => [p.name, p.required ? i : op.params.length + i]));
   const unranked = 2 * op.params.length;
   const names = Object.keys(body).sort((a, b) => (rank.get(a) ?? unranked) - (rank.get(b) ?? unranked) || (a < b ? -1 : a > b ? 1 : 0));

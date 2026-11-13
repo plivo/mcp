@@ -158,6 +158,23 @@ func TestExtraOps(t *testing.T) {
 	}
 }
 
+func TestDestructiveOverride(t *testing.T) {
+	no := false
+	ov := &Overrides{Ops: map[string]OpOverride{"DELETE /Call/{call_uuid}/Play/": {Destructive: &no, Reason: "stops audio"}}}
+	ops := []DocOp{docOp("DELETE", "/Call/{call_uuid}/Play/"), docOp("DELETE", "/Call/{call_uuid}/")}
+	cat, _, err := Build(ops, nil, inventory("DELETE /Call/{}/Play/", "DELETE /Call/{}/"), ov, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, o := range cat.Operations {
+		got[o.ID] = o.Destructive
+	}
+	if got["DELETE /Call/{call_uuid}/Play/"] || !got["DELETE /Call/{call_uuid}/"] {
+		t.Errorf("only the overridden DELETE stops being permanent: %v", got)
+	}
+}
+
 func TestUnconfirmedPricingIsFlagged(t *testing.T) {
 	cat, rv, err := Build([]DocOp{docOp("POST", "/Call/{call_uuid}/Speak/")}, nil, inventory("POST /Call/{}/Speak/"), &Overrides{}, nil)
 	if err != nil {
