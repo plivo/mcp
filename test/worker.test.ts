@@ -813,3 +813,63 @@ describe("cost in the approval preview", () => {
     expect(action.split("\n").some((l) => l.startsWith("Approved"))).toBe(false);
   });
 });
+
+describe("switch organization", () => {
+  const STK_AFTER = "Bearer stk_" + "b".repeat(32);
+  const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+  const AUTH_ID = "MA" + "X".repeat(18);
+  const CHALLENGE = 'Bearer error="insufficient_scope", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"';
+
+  function signedIn(mode?: { pin: "2026-07-28" }) {
+    let account = "Acme US";
+    const { toWorker, sent } = setup(oauth, () => ({ status: 200, body: { name: account, auth_id: AUTH_ID } }));
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    return { sent, replies, connectAs: (auth: string) => connect(recording, auth, mode), signInTo: (name: string) => (account = name) };
+  }
+
+  it("is offered only where sign-in is on, since a switch is a new sign-in", async () => {
+    const names = async (env: Partial<Env>) => (await (await connect(setup(env).toWorker)).listTools()).tools.map((t) => t.name);
+    expect(await names(oauth)).toContain("switch_organization");
+    expect(await names({})).not.toContain("switch_organization");
+  });
+
+  it.each<[string, string, { pin: "2026-07-28" } | undefined]>([
+    ["another organization", "Acme India", undefined],
+    ["the same organization again", "Acme US", undefined],
+    ["another organization", "Acme India", { pin: "2026-07-28" }],
+  ])("shows the account, asks for sign-in only with its own code, and answers the retry after the user picked %s", async (_, picked, mode) => {
+    const { sent, replies, connectAs, signInTo } = signedIn(mode);
+    const before = await connectAs(STK);
+
+    const shown = await call(before, "switch_organization", {});
+    expect(shown.isError).toBe(false);
+    expect(shown.parsed).toMatchObject({ account: { name: "Acme US", auth_id: AUTH_ID } });
+    expect(sent.at(-1)).toMatchObject({ url: `${API}/v1/Account/me/`, method: "GET", auth: STK });
+    const { switch_code } = shown.parsed as { switch_code: string };
+
+    const invented = await call(before, "switch_organization", { switch_code: "made-up-by-the-model" });
+    expect(invented.parsed).toMatchObject({ account: { name: "Acme US" } });
+    expect(invented.parsed).not.toHaveProperty("switch_code");
+    expect(replies.at(-1)!.status).toBe(200);
+
+    const reads = sent.length;
+    await expect(before.callTool({ name: "switch_organization", arguments: { switch_code } })).rejects.toThrow();
+    expect(replies.at(-1)!.status).toBe(403);
+    expect(replies.at(-1)!.headers.get("WWW-Authenticate")).toBe(CHALLENGE);
+    expect(await replies.at(-1)!.json()).toMatchObject({ error: "insufficient_scope" });
+    expect(sent).toHaveLength(reads);
+
+    signInTo(picked);
+    const retried = await call(await connectAs(STK_AFTER), "switch_organization", { switch_code });
+    expect(retried.isError).toBe(false);
+    expect(replies.at(-1)!.status).toBe(200);
+    expect(retried.parsed).toMatchObject({ account: { name: picked } });
+    expect(retried.parsed).not.toHaveProperty("switch_code");
+    expect(sent.at(-1)).toMatchObject({ auth: STK_AFTER });
+  });
+});

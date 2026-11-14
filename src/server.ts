@@ -6,6 +6,7 @@ import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } f
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
+import { registerSwitchTool, type Switcher } from "./switch";
 import { buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
 import { inputError } from "./validate";
 
@@ -18,6 +19,9 @@ export interface ServerConfig {
   /** Called when the auth proxy refuses the caller's token, so the HTTP layer can ask the client to sign in again. */
   onTokenRejected?: () => void;
   onScopeMissing?: () => void;
+  /** Set when sign-in is on: switching organization is a new sign-in, so the HTTP layer must be able to ask for one. */
+  switcher?: Switcher;
+  onSwitchRequested?: () => void;
 }
 
 const MAX_RESULT_CHARS = 40_000;
@@ -119,7 +123,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
         "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
         "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
-        "never approve one on the user's behalf.",
+        "never approve one on the user's behalf." +
+        (config.switcher ? " switch_organization shows which Plivo organization this connection uses and lets the user move it to another." : ""),
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -252,6 +257,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       async (args, reqCtx) => call(s.kind, s.toCall(args), reqCtx),
     );
   }
+
+  if (config.switcher) registerSwitchTool(server, config.switcher, caller, config);
 
   return server;
 }

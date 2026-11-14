@@ -8,6 +8,7 @@ import {
 import { createConfirmer } from "./confirm";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
+import { createSwitcher } from "./switch";
 import { parseCredential, readCapped } from "./upstream";
 
 export interface Env {
@@ -164,6 +165,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
 
       let tokenRejected = false;
       let scopeMissing = false;
+      let switchRequested = false;
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
@@ -174,6 +176,10 @@ export function createWorker(fetchImpl?: typeof fetch) {
         },
         onScopeMissing: () => {
           scopeMissing = true;
+        },
+        switcher: env.PLIVO_LOGIN_BASE && (env.OAUTH_SECRET ?? "").length >= 32 ? createSwitcher(env.OAUTH_SECRET!) : undefined,
+        onSwitchRequested: () => {
+          switchRequested = true;
         },
       };
       const toolCall = request.method === "POST" && (await callsTool(request));
@@ -188,6 +194,16 @@ export function createWorker(fetchImpl?: typeof fetch) {
       if (scopeMissing && env.PLIVO_LOGIN_BASE) {
         return unauthorized(
           "This connection was approved before this tool's permission existed. Approve the Plivo connection again to use it.",
+          insufficientScopeChallenge(publicOrigin),
+          "insufficient_scope",
+          403,
+        );
+      }
+      if (switchRequested) {
+        // The token still works, so this is the step-up challenge and not invalid_token: the client keeps its
+        // connection and only opens sign-in, where the user picks the organization.
+        return unauthorized(
+          "Sign in to Plivo again to choose the organization this connection uses.",
           insufficientScopeChallenge(publicOrigin),
           "insufficient_scope",
           403,

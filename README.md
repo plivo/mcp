@@ -26,6 +26,9 @@ Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `se
 catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
 catalog, and the Worker refuses to start if a listed operation or param is missing from it.
 
+`switch_organization` is listed when sign-in is on. It shows the Plivo account the connection uses, and it lets a
+user who belongs to several organizations move the connection to another one (see Sign-in).
+
 ## Confirmation
 
 Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
@@ -62,6 +65,12 @@ Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth
 (32+ characters), so only this Worker can turn an MCP login into a token. When the auth proxy refuses a token that
 expired or was revoked (its 401 says `error="invalid_token"`), the tool call gets the same HTTP 401, and the client signs
 in again. A 401 from Plivo for a valid token stays a tool error, so it cannot cause a sign-in loop.
+
+A token belongs to one organization, the one picked on the consent screen. To change it, `switch_organization`
+first returns the current account and a `switch_code` (5 minutes, bound to the token). Called again with that code,
+the Worker answers HTTP 403 `insufficient_scope`, the client opens sign-in, and the user picks the organization on
+the consent screen; the model cannot pick it. The new token does not match the code, so a retried call returns the
+new account instead of asking again. The old token stays valid until it expires.
 
 Behind a proxy that forwards the Worker's own Host (CloudFront in front of the workers.dev name), set `PUBLIC_ORIGIN`
 to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
