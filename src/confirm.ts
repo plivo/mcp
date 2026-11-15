@@ -74,10 +74,14 @@ export function approvalReasons(op: Operation): string[] {
   return why;
 }
 
-/** What the user approves: one exact request (method, URL and body), by digest. `k` marks state minted for an elicitation. */
+/**
+ * What the user approves: one exact request (method, URL and body), by digest, on one account. `k` marks state minted
+ * for an elicitation; `a` is the Auth ID the approval named, absent when it said the account was unavailable.
+ */
 interface Pending {
   d: string;
   k?: "elicit";
+  a?: string;
 }
 
 export interface Confirmer {
@@ -257,6 +261,16 @@ export function describeAction(op: Operation, req: BuiltRequest, extra: string[]
   return lines.join("\n");
 }
 
+/** How an approval names an account. The name is JSON-escaped so it cannot forge a line. */
+export function nameAccount(name: unknown, authId: string): string {
+  return `${typeof name === "string" && name ? JSON.stringify(name) : "(name unavailable)"} (Auth ID ${authId})`;
+}
+
+// switch_organization can move the connection between the question and the answer.
+const MOVED =
+  "Nothing was done: this approval was shown for another organization than the one this connection is on now, or the " +
+  "current organization could not be confirmed. Call again to ask the user again.";
+
 export type Gate = { approved: true } | { approved: false; result: CallToolResult | InputRequiredResult };
 
 function textResult(value: unknown, isError = false): CallToolResult {
@@ -303,14 +317,14 @@ function canElicit(ctx: ServerContext): boolean {
  * Asks the user through the client's own dialog. The model sees neither the question nor the answer, so it cannot
  * approve for the user; the retry is sent only when the signed state matches this exact request and the user accepted.
  */
-async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: string): Promise<Gate> {
+async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: string, account: string | undefined): Promise<Gate> {
   const raw = ctx.mcpReq.requestState();
   if (raw === undefined) {
     return {
       approved: false,
       result: inputRequired({
         inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n\nApprove this action?`, requestedSchema: APPROVAL_SCHEMA }) },
-        requestState: await c.code.mint({ d, k: "elicit" }, ctx),
+        requestState: await c.code.mint({ d, k: "elicit", a: account }, ctx),
       }),
     };
   }
@@ -321,29 +335,44 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
     return { approved: false, result: textResult("The approval request expired or is invalid. Nothing was done; call again to ask the user again.", true) };
   }
   if (p.k !== "elicit" || p.d !== d) return { approved: false, result: textResult("The approval was for a different request. Nothing was done.", true) };
+  if (p.a !== account) return { approved: false, result: textResult(MOVED, true) };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
   if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return { approved: true };
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
 }
 
-/**
- * Decides whether a request that needs approval (see approvalReasons) may be sent now. A client that can show its own
- * approval dialog is asked through it; any other gets a preview and a code, and only a call carrying a fresh code, from
- * the same caller, for this exact request is sent.
- */
+/** approvalGate for a catalog operation, whose preview is built from the request. */
 export async function confirmGate(
   c: Confirmer,
   ctx: ServerContext,
   op: Operation,
   req: BuiltRequest,
   code: string | undefined,
-  extra: string[] = [],
+  extra: string[],
+  account: string | undefined,
 ): Promise<Gate> {
-  const d = await requestDigest(req);
   // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
   const shown = preview(op, req, extra);
   if ("refusal" in shown) return { approved: false, result: shown.refusal };
-  if (canElicit(ctx)) return askUser(c, ctx, d, shown.action);
+  return approvalGate(c, ctx, req, shown.action, code, account);
+}
+
+/**
+ * Decides whether a request that needs approval may be sent now. A client that can show its own approval dialog is
+ * asked through it; any other gets a preview and a code, and only a call carrying a fresh code, from the same caller,
+ * for this exact request is sent. `account` is the Auth ID the connection is on at this call: the approval is kept
+ * with it, and an answer is honoured only while it is unchanged.
+ */
+export async function approvalGate(
+  c: Confirmer,
+  ctx: ServerContext,
+  req: BuiltRequest,
+  action: string,
+  code: string | undefined,
+  account: string | undefined,
+): Promise<Gate> {
+  const d = await requestDigest(req);
+  if (canElicit(ctx)) return askUser(c, ctx, d, action, account);
 
   if (code !== undefined) {
     let p: Pending;
@@ -352,8 +381,8 @@ export async function confirmGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.k === undefined && p.d === d) return { approved: true };
-    return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
+    if (p.k !== undefined || p.d !== d) return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
+    return p.a === account ? { approved: true } : { approved: false, result: textResult(MOVED, true) };
   }
 
   return {
@@ -361,8 +390,8 @@ export async function confirmGate(
     result: textResult({
       status: "confirmation_required",
       nothing_done_yet: true,
-      action: shown.action,
-      confirmation_code: await c.code.mint({ d }, ctx),
+      action,
+      confirmation_code: await c.code.mint({ d, a: account }, ctx),
       expires_in_seconds: CODE_TTL_SECONDS,
       instructions:
         "Show the user this action and ask them to approve it. Only if they explicitly say yes, call the same tool " +

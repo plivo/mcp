@@ -20,6 +20,7 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `plivo_api_read` | Call a `GET` operation |
 | `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
+| `switch_organization` | List the organizations the connection may use, or move it to another one |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
 `get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
@@ -41,6 +42,23 @@ The server trusts the model to actually ask; what it enforces is that only the p
 same caller, while the code is fresh. Being stateless, a code can be reused for that same request until it
 expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
+
+Every approval names the account it will run on (name and Auth ID) and is kept with that Auth ID. The account is
+read again when the answer arrives, and the request is sent only if the connection is still on that account; an
+approval that could not name the account is honoured only while the account still cannot be read.
+
+## Organizations
+
+A user who belongs to several organizations ticks, at sign-in, the ones the connection may use. The token starts on
+the sign-in organization, and the auth proxy runs every call on the token's current organization, so the other tools
+take no organization parameter. `switch_organization` with no arguments lists the allowed organizations
+(`GET /v1/proxy/mcp/organizations`); with `organization` (an Auth ID from that list) it asks the user, naming both
+organizations, and then moves the token (`POST /v1/proxy/mcp/organization`). The Worker keeps nothing: it reads the
+current organization from the proxy on each call.
+
+A switch between an approval's question and its answer voids that approval. An organization outside the list is a
+plain tool error; changing the list takes a new sign-in. `src/organizations.ts` is the only reader of the two routes'
+response bodies.
 
 ## Sign-in
 

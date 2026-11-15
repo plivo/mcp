@@ -2,11 +2,12 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
+import { approvalGate, approvalReasons, confirmationCodeField, confirmGate, nameAccount, type Confirmer } from "./confirm";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
-import { buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
+import { listOrganizations, NOT_ALLOWED, switchOrganization, switchRequest, type OrgFailure } from "./organizations";
+import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
 import { inputError } from "./validate";
 
 export interface ServerConfig {
@@ -72,10 +73,11 @@ const writeInput = callInput.extend({ confirmation_code: confirmationCodeField }
 const PRICE = /^\d+(\.\d+)?$/;
 
 /**
- * What a paid action costs and which account pays, for the approval preview. A failed lookup never blocks the preview.
+ * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
+ * shows (with the cost, for a paid action). A failed lookup never blocks the preview; it then names no account.
  * Plivo shows tax only on the invoice, so the preview always says it may apply.
  */
-async function costLines(op: Operation, args: CallArgs, caller: Credential, config: ServerConfig): Promise<string[]> {
+async function approvalAccount(op: Operation, args: CallArgs, caller: Credential, config: ServerConfig, asking: boolean): Promise<{ id?: string; lines: string[] }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
@@ -96,16 +98,16 @@ async function costLines(op: Operation, args: CallArgs, caller: Credential, conf
     const setup = String(hit?.setup_rate ?? "");
     return PRICE.test(monthly) && PRICE.test(setup) ? `Price: $${monthly} a month and $${setup} setup.` : undefined;
   };
-  const [account, price] = await Promise.all([get("GET /", {}), op.id === "POST /PhoneNumber/{number}/" ? numberPrice() : undefined]);
+  const buying = asking && op.id === "POST /PhoneNumber/{number}/";
+  const [account, price] = await Promise.all([get("GET /", {}), buying ? numberPrice() : undefined]);
+  const id = typeof account?.auth_id === "string" && AUTH_ID_RE.test(account.auth_id) ? account.auth_id : undefined;
+  if (!asking) return { id, lines: [] };
   const balance = String(account?.cash_credits ?? "");
-  const lines = [
-    typeof account?.name === "string"
-      ? `Account: ${JSON.stringify(account.name)}${PRICE.test(balance) ? `, balance $${balance}` : ""}.`
-      : "Account: unavailable.",
-  ];
-  if (op.id === "POST /PhoneNumber/{number}/") lines.push(price ?? "Price: unavailable; search_numbers shows it.");
-  lines.push("Taxes may apply.");
-  return lines;
+  // No name without the Auth ID: a named account the approval is not bound to could be the wrong one by the time it runs.
+  const lines = [id ? `Account: ${nameAccount(account?.name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.` : "Account: unavailable."];
+  if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
+  if (op.costs_money) lines.push("Taxes may apply.");
+  return { id, lines };
 }
 
 /** Tools answered from the bundled catalog and docs: a call to one never reaches the auth proxy. */
@@ -122,7 +124,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
         "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
         "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
-        "never approve one on the user's behalf.",
+        "never approve one on the user's behalf. Every call runs on the connection's current organization; " +
+        "switch_organization shows it and changes it.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -146,10 +149,9 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if (invalid) return text(`Nothing was done: ${invalid}.`, true);
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
-      // Looked up only for the question, not the call that carries the answer.
       const asking = args.confirmation_code === undefined && reqCtx.mcpReq.requestState() === undefined;
-      const extra = asking && op.costs_money ? await costLines(op, args, caller, config) : [];
-      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, extra);
+      const account = await approvalAccount(op, args, caller, config, asking);
+      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, account.lines, account.id);
       if (!gate.approved) return gate.result;
     }
     let res;
@@ -246,6 +248,58 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     async (args, reqCtx) => call("write", args, reqCtx),
+  );
+
+  async function organizations(args: { organization?: string; confirmation_code?: string }, reqCtx: ServerContext) {
+    if (!caller) return text("This request has no Plivo credentials.", true);
+    const failed = (f: OrgFailure) => {
+      if (f.tokenRejected) config.onTokenRejected?.();
+      if (f.scopeMissing) config.onScopeMissing?.();
+      return text(f.error, true);
+    };
+    // Read on every call: it names the target for the question, and says where the connection is when the answer comes.
+    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+    if ("error" in listed) return failed(listed);
+    if (args.organization === undefined) return text(listed);
+
+    const from = listed.organizations.find((o) => o.current);
+    const to = listed.organizations.find((o) => o.auth_id === args.organization);
+    if (!to) return text(NOT_ALLOWED, true);
+    if (to.current) return text({ status: "already_current", organization: to });
+    if (!from) return text("Nothing was changed: Plivo did not say which organization this connection is on now. Try again.", true);
+    if (config.confirmationMode === "block") return text("Switching organization needs the user's approval, and this server is set to refuse such actions.", true);
+
+    const req = switchRequest(config.apiBase, to.auth_id);
+    if (config.confirmationMode === "confirm") {
+      if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
+      const action = [
+        "Switch organization",
+        "Every later action on this connection will run on the new organization, until the next switch.",
+        `From: ${nameAccount(from.name, from.auth_id)}.`,
+        `To: ${nameAccount(to.name, to.auth_id)}.`,
+      ].join("\n");
+      const gate = await approvalGate(config.confirmer, reqCtx, req, action, args.confirmation_code, from.auth_id);
+      if (!gate.approved) return gate.result;
+    }
+    const done = await switchOrganization(req, caller, config.fetchImpl);
+    if ("error" in done) return failed(done);
+    return text({ status: "switched", organization: { ...to, current: true }, note: "Every later call on this connection runs on this organization." });
+  }
+
+  server.registerTool(
+    "switch_organization",
+    {
+      title: "Switch organization",
+      description:
+        "With no arguments, list the organizations this connection may use and which one is current. With organization, " +
+        "move the connection to it, so every later call runs there; this needs the user's approval. Switch only when the user asks.",
+      inputSchema: z.strictObject({
+        organization: z.string().regex(AUTH_ID_RE).optional().describe("Auth ID of the organization to switch to, from this tool's list."),
+        confirmation_code: confirmationCodeField,
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async (args, reqCtx) => organizations(args, reqCtx),
   );
 
   for (const s of shortcuts) {
