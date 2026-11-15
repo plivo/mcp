@@ -339,7 +339,6 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
 }
 
-/** approvalGate for a catalog operation, whose preview is built from the request. */
 export async function confirmGate(
   c: Confirmer,
   ctx: ServerContext,

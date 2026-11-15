@@ -911,7 +911,7 @@ describe("organizations", () => {
   const failed = (status: number, errors: Record<string, string>): Reply => ({ status, body: { api_id: "x", data: null, errors } });
   const FORBIDDEN = failed(403, { global_error: "Token is not authorised for this module", required_module: "account.read" });
 
-  /** An auth proxy whose token starts on Acme and may move to Beta; `state` lets a test move it, rename an organization or break a route. */
+  /** An auth proxy whose token starts on Acme and may move to Beta. */
   function orgSetup(env: Partial<Env> = {}, routes: { list?: Reply; post?: Reply } = {}) {
     const state: { current: string; names: Record<string, string>; account?: Reply; list?: Reply; write?: Reply } = { current: ORG_A, names: { [ORG_A]: "Acme", [ORG_B]: "Beta" }, list: routes.list };
     const ok = (data: unknown): Reply => ({ status: 200, body: { api_id: "x", data, errors: null } });

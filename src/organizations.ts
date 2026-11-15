@@ -60,7 +60,6 @@ export async function listOrganizations(
 
 const UNCONFIRMED = "The switch could not be confirmed. Call switch_organization with no arguments to see which organization this connection is on.";
 
-/** Sends an approved switch; answers with the organization the auth proxy says the connection is on now. */
 export async function switchOrganization(req: BuiltRequest, cred: Credential, fetchImpl?: typeof fetch): Promise<Organization | OrgFailure> {
   let res: UpstreamResult;
   try {
