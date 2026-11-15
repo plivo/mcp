@@ -1,3 +1,4 @@
+import { cleanName } from "./oauth";
 import { AUTH_ID_RE, callUpstream, type BuiltRequest, type Credential, type UpstreamResult } from "./upstream";
 
 export interface Organization {
@@ -9,21 +10,19 @@ export interface Organization {
 
 export interface OrgFailure {
   error: string;
+  /** The auth proxy has no such route: it predates organizations, so the connection cannot have moved. */
+  unsupported?: boolean;
   tokenRejected?: boolean;
   scopeMissing?: boolean;
 }
 
 const record = (v: unknown): Record<string, unknown> => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
-// The only two readers of the auth proxy's bodies for these routes. Its envelope is read loosely: the payload at the
-// top level or under `data`, the refusal code beside or inside `errors` / `error`.
-function payload(body: unknown): Record<string, unknown> {
-  const b = record(body);
-  return Array.isArray(b.organizations) ? b : record(b.data);
-}
-function notAllowed(res: UpstreamResult): boolean {
-  const b = record(res.body);
-  return res.status === 403 && [b, record(b.errors), record(b.error), record(b.data)].some((o) => o.error === "organization_not_allowed");
+function organization(v: unknown, current = false): Organization | undefined {
+  const o = record(v);
+  if (typeof o.auth_id !== "string" || !AUTH_ID_RE.test(o.auth_id)) return undefined;
+  // The name is chosen by whoever administers that organization, and ends up in approvals and in front of the model.
+  return { auth_id: o.auth_id, name: cleanName(o.name), ...(typeof o.region === "string" ? { region: o.region } : {}), current };
 }
 
 const route = (apiBase: string, name: string) => `${apiBase.replace(/\/+$/, "")}/mcp/${name}`;
@@ -36,10 +35,12 @@ export function switchRequest(apiBase: string, authId: string): BuiltRequest {
 export const NOT_ALLOWED = "Nothing was changed: that is not one of the organizations allowed at sign-in. Sign in again to change the list.";
 
 function failure(res: UpstreamResult, doing: string): OrgFailure {
+  const errors = record(record(res.body).errors);
   // A plain tool error: a new sign-in is the user's choice here, not a challenge the client should act on by itself.
-  if (notAllowed(res)) return { error: NOT_ALLOWED };
-  if (res.status === 404) return { error: "Switching organizations is not available on this Plivo server yet." };
-  return { error: `Nothing was changed: Plivo could not ${doing} (HTTP ${res.status}).`, tokenRejected: res.tokenRejected, scopeMissing: res.scopeMissing };
+  if (res.status === 403 && errors.error === "organization_not_allowed") return { error: NOT_ALLOWED };
+  if (res.status === 404) return { error: "Switching organizations is not available on this Plivo server yet.", unsupported: true };
+  const why = typeof errors.global_error === "string" ? `: ${errors.global_error}` : "";
+  return { error: `Nothing was changed: Plivo could not ${doing} (HTTP ${res.status})${why}.`, tokenRejected: res.tokenRejected, scopeMissing: res.scopeMissing };
 }
 
 export async function listOrganizations(cred: Credential, apiBase: string, fetchImpl?: typeof fetch): Promise<{ organizations: Organization[] } | OrgFailure> {
@@ -50,22 +51,22 @@ export async function listOrganizations(cred: Credential, apiBase: string, fetch
     return { error: "Nothing was changed: Plivo could not be reached to list the organizations." };
   }
   if (!res.ok) return failure(res, "list the organizations");
-  const raw = payload(res.body).organizations;
+  const raw = record(record(res.body).data).organizations;
   if (!Array.isArray(raw)) return { error: "Nothing was changed: Plivo's list of organizations could not be read." };
-  const organizations = raw.map(record).flatMap((o): Organization[] =>
-    typeof o.auth_id === "string" && AUTH_ID_RE.test(o.auth_id)
-      ? [{ auth_id: o.auth_id, name: typeof o.name === "string" ? o.name : "", ...(typeof o.region === "string" ? { region: o.region } : {}), current: o.current === true }]
-      : [],
-  );
-  return { organizations };
+  return { organizations: raw.flatMap((v) => organization(v, record(v).current === true) ?? []) };
 }
 
-export async function switchOrganization(req: BuiltRequest, cred: Credential, fetchImpl?: typeof fetch): Promise<{ ok: true } | OrgFailure> {
+const UNCONFIRMED = "The switch could not be confirmed. Call switch_organization with no arguments to see which organization this connection is on.";
+
+/** Sends an approved switch; answers with the organization the auth proxy says the connection is on now. */
+export async function switchOrganization(req: BuiltRequest, cred: Credential, fetchImpl?: typeof fetch): Promise<Organization | OrgFailure> {
   let res: UpstreamResult;
   try {
     res = await callUpstream(req, cred, fetchImpl);
   } catch {
-    return { error: "The switch could not be confirmed. Call switch_organization with no arguments to see which organization this connection is on." };
+    return { error: UNCONFIRMED };
   }
-  return res.ok ? { ok: true } : failure(res, "switch organization");
+  if (!res.ok) return failure(res, "switch organization");
+  const now = organization(record(res.body).data, true);
+  return now && req.body === JSON.stringify({ auth_id: now.auth_id }) ? now : { error: UNCONFIRMED };
 }

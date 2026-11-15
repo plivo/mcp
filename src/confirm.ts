@@ -11,6 +11,7 @@ import {
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
+import { cleanName } from "./oauth";
 import type { BuiltRequest } from "./upstream";
 
 const KEEPS_ACCESS = "This creates or changes a way to place calls on this account, and it keeps working after this app is disconnected.";
@@ -76,7 +77,7 @@ export function approvalReasons(op: Operation): string[] {
 
 /**
  * What the user approves: one exact request (method, URL and body), by digest, on one account. `k` marks state minted
- * for an elicitation; `a` is the Auth ID the approval named, absent when it said the account was unavailable.
+ * for an elicitation; `a` is the Auth ID the approval named, absent only where the auth proxy has no organizations to switch between.
  */
 interface Pending {
   d: string;
@@ -261,15 +262,17 @@ export function describeAction(op: Operation, req: BuiltRequest, extra: string[]
   return lines.join("\n");
 }
 
-/** How an approval names an account. The name is JSON-escaped so it cannot forge a line. */
+/**
+ * How an approval names an account. The name is someone else's text: the Auth ID the approval is bound to comes
+ * first, and the name is cleaned, capped and JSON-escaped like every other value shown here.
+ */
 export function nameAccount(name: unknown, authId: string): string {
-  return `${typeof name === "string" && name ? JSON.stringify(name) : "(name unavailable)"} (Auth ID ${authId})`;
+  const shown = cleanName(name);
+  return `Auth ID ${authId} ${shown ? JSON.stringify(shown) : "(name unavailable)"}`;
 }
 
 // switch_organization can move the connection between the question and the answer.
-const MOVED =
-  "Nothing was done: this approval was shown for another organization than the one this connection is on now, or the " +
-  "current organization could not be confirmed. Call again to ask the user again.";
+const MOVED = "Nothing was done: this approval was shown for another organization than the one this connection is on now. Call again to ask the user again.";
 
 export type Gate = { approved: true } | { approved: false; result: CallToolResult | InputRequiredResult };
 
@@ -279,23 +282,12 @@ function textResult(value: unknown, isError = false): CallToolResult {
 }
 
 function preview(op: Operation, req: BuiltRequest, extra: string[]): { action: string } | { refusal: CallToolResult } {
-  let action: string;
   try {
-    action = describeAction(op, req, extra);
+    return { action: describeAction(op, req, extra) };
   } catch (e) {
     if (!(e instanceof Unshowable)) throw e;
     return { refusal: textResult(`Nothing was done: this action cannot be shown to the user for approval, because ${e.message}. Make the change in the Plivo console.`, true) };
   }
-  if (action.length > MAX_PREVIEW_CHARS) {
-    return {
-      refusal: textResult(
-        `Nothing was done: this action is ${action.length} characters, too long to show the user for approval (the limit is ` +
-          `${MAX_PREVIEW_CHARS}). Make the change in smaller steps if the operation allows it, or in the Plivo console.`,
-        true,
-      ),
-    };
-  }
-  return { action };
 }
 
 
@@ -307,7 +299,7 @@ const APPROVAL_SCHEMA = {
 };
 
 /** Form-mode elicitation, declared on this 2026-07-28 request; a 2025-era request carries no envelope. */
-function canElicit(ctx: ServerContext): boolean {
+export function canElicit(ctx: ServerContext): boolean {
   const caps = (ctx.mcpReq.envelope as Record<string, unknown> | undefined)?.[CLIENT_CAPABILITIES_META_KEY] as ClientCapabilities | undefined;
   const e = caps?.elicitation as Record<string, unknown> | undefined;
   return e !== undefined && (Object.keys(e).length === 0 || "form" in e);
@@ -351,7 +343,6 @@ export async function confirmGate(
   extra: string[],
   account: string | undefined,
 ): Promise<Gate> {
-  // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
   const shown = preview(op, req, extra);
   if ("refusal" in shown) return { approved: false, result: shown.refusal };
   return approvalGate(c, ctx, req, shown.action, code, account);
@@ -371,6 +362,17 @@ export async function approvalGate(
   code: string | undefined,
   account: string | undefined,
 ): Promise<Gate> {
+  // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
+  if (action.length > MAX_PREVIEW_CHARS) {
+    return {
+      approved: false,
+      result: textResult(
+        `Nothing was done: this action is ${action.length} characters, too long to show the user for approval (the limit is ` +
+          `${MAX_PREVIEW_CHARS}). Make the change in smaller steps if the operation allows it, or in the Plivo console.`,
+        true,
+      ),
+    };
+  }
   const d = await requestDigest(req);
   if (canElicit(ctx)) return askUser(c, ctx, d, action, account);
 

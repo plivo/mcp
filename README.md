@@ -43,9 +43,10 @@ same caller, while the code is fresh. Being stateless, a code can be reused for 
 expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
 
-Every approval names the account it will run on (name and Auth ID) and is kept with that Auth ID. The account is
-read again when the answer arrives, and the request is sent only if the connection is still on that account; an
-approval that could not name the account is honoured only while the account still cannot be read.
+Every approval names the account it will run on (Auth ID and name) and is kept with that Auth ID. The account is
+read again when the answer arrives, and the request is sent only if the connection is still on that account. A token
+without the account permission is named from the organizations route instead; if Plivo cannot say which account the
+connection is on, nothing is asked or sent.
 
 ## Organizations
 
@@ -57,8 +58,8 @@ organizations, and then moves the token (`POST /v1/proxy/mcp/organization`). The
 current organization from the proxy on each call.
 
 A switch between an approval's question and its answer voids that approval. An organization outside the list is a
-plain tool error; changing the list takes a new sign-in. `src/organizations.ts` is the only reader of the two routes'
-response bodies.
+plain tool error; changing the list takes a new sign-in. A switch code is reusable until it expires like any other
+(see Confirmation), so after A to B and back, the first code can move the connection to B again.
 
 ## Sign-in
 

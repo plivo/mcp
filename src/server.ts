@@ -2,7 +2,7 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalGate, approvalReasons, confirmationCodeField, confirmGate, nameAccount, type Confirmer } from "./confirm";
+import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, nameAccount, type Confirmer } from "./confirm";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
@@ -74,10 +74,16 @@ const PRICE = /^\d+(\.\d+)?$/;
 
 /**
  * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
- * shows (with the cost, for a paid action). A failed lookup never blocks the preview; it then names no account.
- * Plivo shows tax only on the invoice, so the preview always says it may apply.
+ * shows (with the cost, for a paid action). `unknown` when Plivo cannot say which account the connection is on, so
+ * nothing can be asked or sent. Plivo shows tax only on the invoice, so the preview always says it may apply.
  */
-async function approvalAccount(op: Operation, args: CallArgs, caller: Credential, config: ServerConfig, asking: boolean): Promise<{ id?: string; lines: string[] }> {
+async function approvalAccount(
+  op: Operation,
+  args: CallArgs,
+  caller: Credential,
+  config: ServerConfig,
+  asking: boolean,
+): Promise<{ id?: string; lines: string[] } | { unknown: true }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
@@ -100,11 +106,20 @@ async function approvalAccount(op: Operation, args: CallArgs, caller: Credential
   };
   const buying = asking && op.id === "POST /PhoneNumber/{number}/";
   const [account, price] = await Promise.all([get("GET /", {}), buying ? numberPrice() : undefined]);
-  const id = typeof account?.auth_id === "string" && AUTH_ID_RE.test(account.auth_id) ? account.auth_id : undefined;
+  let id = typeof account?.auth_id === "string" && AUTH_ID_RE.test(account.auth_id) ? account.auth_id : undefined;
+  let name = account?.name;
+  if (!id) {
+    // A token without the account permission can still be on any of its organizations; this route needs no permission.
+    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+    const current = "error" in listed ? undefined : listed.organizations.find((o) => o.current);
+    // Unbound only where the proxy has no such route, so no switch can have happened.
+    if (!current && !("error" in listed && listed.unsupported)) return { unknown: true };
+    id = current?.auth_id;
+    name = current?.name;
+  }
   if (!asking) return { id, lines: [] };
   const balance = String(account?.cash_credits ?? "");
-  // No name without the Auth ID: a named account the approval is not bound to could be the wrong one by the time it runs.
-  const lines = [id ? `Account: ${nameAccount(account?.name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.` : "Account: unavailable."];
+  const lines = [id ? `Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.` : "Account: unavailable."];
   if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
   if (op.costs_money) lines.push("Taxes may apply.");
   return { id, lines };
@@ -149,8 +164,12 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if (invalid) return text(`Nothing was done: ${invalid}.`, true);
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
-      const asking = args.confirmation_code === undefined && reqCtx.mcpReq.requestState() === undefined;
+      // A dialog client is asked whatever code the model brings, so that code must not empty the question.
+      const asking = reqCtx.mcpReq.requestState() === undefined && (args.confirmation_code === undefined || canElicit(reqCtx));
       const account = await approvalAccount(op, args, caller, config, asking);
+      if ("unknown" in account) {
+        return text("Nothing was done: Plivo could not say which organization this connection is on, so this action cannot be approved now. Try again.", true);
+      }
       const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, account.lines, account.id);
       if (!gate.approved) return gate.result;
     }
@@ -283,7 +302,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     }
     const done = await switchOrganization(req, caller, config.fetchImpl);
     if ("error" in done) return failed(done);
-    return text({ status: "switched", organization: { ...to, current: true }, note: "Every later call on this connection runs on this organization." });
+    return text({ status: "switched", organization: done, note: "Every later call on this connection runs on this organization." });
   }
 
   server.registerTool(
