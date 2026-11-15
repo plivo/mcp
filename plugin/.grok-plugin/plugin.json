@@ -1,0 +1,12 @@
+{
+  "name": "plivo",
+  "description": "The Plivo MCP server for Grok Build: send SMS, make calls, manage phone numbers and call the Plivo API on your own Plivo account. Anything that costs money or can't be undone asks for your approval first.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Plivo",
+    "url": "https://www.plivo.com"
+  },
+  "homepage": "https://github.com/plivo/mcp",
+  "repository": "https://github.com/plivo/mcp",
+  "keywords": ["plivo", "plivo mcp", "plivo sms", "plivo voice", "plivo api"]
+}
