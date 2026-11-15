@@ -2,7 +2,7 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, nameAccount, type Confirmer } from "./confirm";
+import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer } from "./confirm";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
@@ -72,6 +72,12 @@ const writeInput = callInput.extend({ confirmation_code: confirmationCodeField }
 
 const PRICE = /^\d+(\.\d+)?$/;
 
+// Short, so a slow lookup refuses quickly instead of adding its wait to the action's own.
+const LOOKUP_TIMEOUT_MS = 5_000;
+
+// The auth proxy's refusal of a path whose Auth ID is not the token's current organization.
+const OTHER_ACCOUNT = "Token cannot operate on a different account";
+
 /**
  * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
  * shows (with the cost, for a paid action). `unknown` when Plivo cannot say which account the connection is on, so
@@ -83,12 +89,14 @@ async function approvalAccount(
   caller: Credential,
   config: ServerConfig,
   asking: boolean,
-): Promise<{ id?: string; lines: string[] } | { unknown: true }> {
+): Promise<{ id: string; lines: string[] } | { unknown: true }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
     try {
-      const res = await callUpstream(r, caller, config.fetchImpl);
+      const res = await callUpstream(r, caller, config.fetchImpl, LOOKUP_TIMEOUT_MS);
+      // Nothing may be sent before the organization is known, so this is where an expired token first shows.
+      if (res.tokenRejected) config.onTokenRejected?.();
       return res.ok && res.body !== null && typeof res.body === "object" ? (res.body as Record<string, unknown>) : undefined;
     } catch {
       return undefined;
@@ -110,16 +118,15 @@ async function approvalAccount(
   let name = account?.name;
   if (!id) {
     // A token without the account permission can still be on any of its organizations; this route needs no permission.
-    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl, LOOKUP_TIMEOUT_MS);
     const current = "error" in listed ? undefined : listed.organizations.find((o) => o.current);
-    // Unbound only where the proxy has no such route, so no switch can have happened.
-    if (!current && !("error" in listed && listed.unsupported)) return { unknown: true };
-    id = current?.auth_id;
-    name = current?.name;
+    if (!current) return { unknown: true };
+    id = current.auth_id;
+    name = current.name;
   }
   if (!asking) return { id, lines: [] };
   const balance = String(account?.cash_credits ?? "");
-  const lines = [id ? `Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.` : "Account: unavailable."];
+  const lines = [`Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.`];
   if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
   if (op.costs_money) lines.push("Taxes may apply.");
   return { id, lines };
@@ -162,6 +169,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if ("error" in req) return text(req.error, true);
     const invalid = kind === "write" ? inputError(op, args) : undefined;
     if (invalid) return text(`Nothing was done: ${invalid}.`, true);
+    let send = req;
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
       // A dialog client is asked whatever code the model brings, so that code must not empty the question.
@@ -172,16 +180,23 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       }
       const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, account.lines, account.id);
       if (!gate.approved) return gate.result;
+      // Addressed to the approved organization, not `me`: the auth proxy refuses it if a switch landed after the check above.
+      const bound = buildRequest(op, args, { ...caller, authId: account.id }, config.apiBase);
+      if ("error" in bound) return text(bound.error, true);
+      send = bound;
     }
     let res;
     try {
-      res = await callUpstream(req, caller, config.fetchImpl);
+      res = await callUpstream(send, caller, config.fetchImpl);
     } catch (e) {
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
       return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
     }
     if (res.tokenRejected) config.onTokenRejected?.();
     if (res.scopeMissing) config.onScopeMissing?.();
+    if (send !== req && res.status === 403 && (res.body as { errors?: { global_error?: unknown } } | null)?.errors?.global_error === OTHER_ACCOUNT) {
+      return text(MOVED, true);
+    }
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;
@@ -273,7 +288,6 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if (!caller) return text("This request has no Plivo credentials.", true);
     const failed = (f: OrgFailure) => {
       if (f.tokenRejected) config.onTokenRejected?.();
-      if (f.scopeMissing) config.onScopeMissing?.();
       return text(f.error, true);
     };
     // Read on every call: it names the target for the question, and says where the connection is when the answer comes.

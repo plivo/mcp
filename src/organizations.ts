@@ -10,10 +10,7 @@ export interface Organization {
 
 export interface OrgFailure {
   error: string;
-  /** The auth proxy has no such route: it predates organizations, so the connection cannot have moved. */
-  unsupported?: boolean;
   tokenRejected?: boolean;
-  scopeMissing?: boolean;
 }
 
 const record = (v: unknown): Record<string, unknown> => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
@@ -34,25 +31,30 @@ export function switchRequest(apiBase: string, authId: string): BuiltRequest {
 
 export const NOT_ALLOWED = "Nothing was changed: that is not one of the organizations allowed at sign-in. Sign in again to change the list.";
 
-function failure(res: UpstreamResult, doing: string): OrgFailure {
+function failure(res: UpstreamResult, what: string): OrgFailure {
   const errors = record(record(res.body).errors);
   // A plain tool error: a new sign-in is the user's choice here, not a challenge the client should act on by itself.
   if (res.status === 403 && errors.error === "organization_not_allowed") return { error: NOT_ALLOWED };
-  if (res.status === 404) return { error: "Switching organizations is not available on this Plivo server yet.", unsupported: true };
+  if (res.status === 404) return { error: "Switching organizations is not available on this Plivo server yet." };
   const why = typeof errors.global_error === "string" ? `: ${errors.global_error}` : "";
-  return { error: `Nothing was changed: Plivo could not ${doing} (HTTP ${res.status})${why}.`, tokenRejected: res.tokenRejected, scopeMissing: res.scopeMissing };
+  return { error: `${what} (HTTP ${res.status})${why}.`, tokenRejected: res.tokenRejected };
 }
 
-export async function listOrganizations(cred: Credential, apiBase: string, fetchImpl?: typeof fetch): Promise<{ organizations: Organization[] } | OrgFailure> {
+export async function listOrganizations(
+  cred: Credential,
+  apiBase: string,
+  fetchImpl?: typeof fetch,
+  timeoutMs?: number,
+): Promise<{ organizations: Organization[] } | OrgFailure> {
   let res: UpstreamResult;
   try {
-    res = await callUpstream({ url: route(apiBase, "organizations"), method: "GET", warnings: [] }, cred, fetchImpl);
+    res = await callUpstream({ url: route(apiBase, "organizations"), method: "GET", warnings: [] }, cred, fetchImpl, timeoutMs);
   } catch {
-    return { error: "Nothing was changed: Plivo could not be reached to list the organizations." };
+    return { error: "Plivo could not be reached to list the organizations." };
   }
-  if (!res.ok) return failure(res, "list the organizations");
+  if (!res.ok) return failure(res, "Plivo could not list the organizations");
   const raw = record(record(res.body).data).organizations;
-  if (!Array.isArray(raw)) return { error: "Nothing was changed: Plivo's list of organizations could not be read." };
+  if (!Array.isArray(raw)) return { error: "Plivo's list of organizations could not be read." };
   return { organizations: raw.flatMap((v) => organization(v, record(v).current === true) ?? []) };
 }
 
@@ -66,7 +68,9 @@ export async function switchOrganization(req: BuiltRequest, cred: Credential, fe
   } catch {
     return { error: UNCONFIRMED };
   }
-  if (!res.ok) return failure(res, "switch organization");
+  // A gateway can fail after the auth proxy has already moved the connection.
+  if (res.status >= 500) return { error: UNCONFIRMED };
+  if (!res.ok) return failure(res, "Nothing was changed: Plivo could not switch organization");
   const now = organization(record(res.body).data, true);
   return now && req.body === JSON.stringify({ auth_id: now.auth_id }) ? now : { error: UNCONFIRMED };
 }

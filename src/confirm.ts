@@ -77,7 +77,7 @@ export function approvalReasons(op: Operation): string[] {
 
 /**
  * What the user approves: one exact request (method, URL and body), by digest, on one account. `k` marks state minted
- * for an elicitation; `a` is the Auth ID the approval named, absent only where the auth proxy has no organizations to switch between.
+ * for an elicitation; `a` is the Auth ID the approval named, absent only in state minted before approvals carried it.
  */
 interface Pending {
   d: string;
@@ -272,7 +272,12 @@ export function nameAccount(name: unknown, authId: string): string {
 }
 
 // switch_organization can move the connection between the question and the answer.
-const MOVED = "Nothing was done: this approval was shown for another organization than the one this connection is on now. Call again to ask the user again.";
+export const MOVED = "Nothing was done: this approval was shown for another organization than the one this connection is on now. Call again to ask the user again.";
+
+function wrongAccount(p: Pending, account: string): CallToolResult | undefined {
+  if (p.a === account) return undefined;
+  return textResult(p.a === undefined ? "Nothing was done: this approval was issued before an update and no longer counts. Call again to ask the user again." : MOVED, true);
+}
 
 export type Gate = { approved: true } | { approved: false; result: CallToolResult | InputRequiredResult };
 
@@ -309,7 +314,7 @@ export function canElicit(ctx: ServerContext): boolean {
  * Asks the user through the client's own dialog. The model sees neither the question nor the answer, so it cannot
  * approve for the user; the retry is sent only when the signed state matches this exact request and the user accepted.
  */
-async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: string, account: string | undefined): Promise<Gate> {
+async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: string, account: string): Promise<Gate> {
   const raw = ctx.mcpReq.requestState();
   if (raw === undefined) {
     return {
@@ -327,7 +332,8 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
     return { approved: false, result: textResult("The approval request expired or is invalid. Nothing was done; call again to ask the user again.", true) };
   }
   if (p.k !== "elicit" || p.d !== d) return { approved: false, result: textResult("The approval was for a different request. Nothing was done.", true) };
-  if (p.a !== account) return { approved: false, result: textResult(MOVED, true) };
+  const moved = wrongAccount(p, account);
+  if (moved) return { approved: false, result: moved };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
   if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return { approved: true };
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
@@ -341,7 +347,7 @@ export async function confirmGate(
   req: BuiltRequest,
   code: string | undefined,
   extra: string[],
-  account: string | undefined,
+  account: string,
 ): Promise<Gate> {
   const shown = preview(op, req, extra);
   if ("refusal" in shown) return { approved: false, result: shown.refusal };
@@ -360,7 +366,7 @@ export async function approvalGate(
   req: BuiltRequest,
   action: string,
   code: string | undefined,
-  account: string | undefined,
+  account: string,
 ): Promise<Gate> {
   // Checked on both calls, so a code minted before a limit existed cannot approve what the limit refuses.
   if (action.length > MAX_PREVIEW_CHARS) {
@@ -384,7 +390,8 @@ export async function approvalGate(
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
     if (p.k !== undefined || p.d !== d) return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
-    return p.a === account ? { approved: true } : { approved: false, result: textResult(MOVED, true) };
+    const moved = wrongAccount(p, account);
+    return moved ? { approved: false, result: moved } : { approved: true };
   }
 
   return {

@@ -154,6 +154,12 @@ describe("a token is checked with the auth proxy before the handshake is answere
     expect(await res.json()).toMatchObject({ error: "invalid_token" });
   });
 
+  it("an expired token gets the sign-in 401 on a write that asks first, which sends nothing before it knows the organization", async () => {
+    const { toWorker } = setup(OAUTH, REFUSED);
+    const res = await rpc(toWorker, "tools/call", { name: "send_sms", arguments: { src: "+14155550100", dst: "+14155550101", text: "hi" } });
+    expect(res.status).toBe(401);
+  });
+
   it.each<[string, { pin: "2026-07-28" } | undefined]>([
     ["2025 client", undefined],
     ["2026-07-28 client", { pin: "2026-07-28" }],
@@ -471,7 +477,7 @@ describe("shortcuts", () => {
 
 describe("confirmation", () => {
   const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
-  const SENT_SMS = { url: `${API}/v1/Account/me/Message/`, method: "POST", auth: STK, body: SMS };
+  const SENT_SMS = { url: `${API}/v1/Account/${ORG_A}/Message/`, method: "POST", auth: STK, body: SMS };
 
   it.each<[string, string, Record<string, unknown>, { pin: "2026-07-28" } | undefined]>([
     ["send_sms", "send_sms", SMS, undefined],
@@ -806,7 +812,7 @@ describe("approval through the client's own dialog", () => {
     expect(asked).toHaveLength(1);
     expect(asked[0]).toContain('dst: "+14155550101"');
     expect(asked[0]).toContain("This costs money.");
-    expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/me/Message/`, method: "POST", auth: STK, body: SMS }]);
+    expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/${ORG_A}/Message/`, method: "POST", auth: STK, body: SMS }]);
   });
 
   it.each<[string, Answer]>([
@@ -873,15 +879,11 @@ describe("cost in the approval preview", () => {
     expect(action).toContain("Taxes may apply.");
   });
 
-  it("still asks, saying so, when the lookups fail on an auth proxy that has no organizations", async () => {
-    const { toWorker, sent } = setup({}, (url) => (url === `${API}/mcp/organizations` ? { status: 404, body: {} } : { status: 500, body: { error: "down" } }));
-    const client = await connect(toWorker);
-    const preview = (await call(client, "buy_number", { number: "14155550134" })).parsed as { status: string; action: string; confirmation_code: string };
+  it("still asks, saying so, when the price lookup fails", async () => {
+    const client = await connect(setup({}, (url) => (url === ACCOUNT ? { status: 200, body: { auth_id: ORG_A } } : { status: 500, body: { error: "down" } })).toWorker);
+    const preview = (await call(client, "buy_number", { number: "14155550134" })).parsed as { status: string; action: string };
     expect(preview.status).toBe("confirmation_required");
-    expect(preview.action).toContain("Account: unavailable.");
     expect(preview.action).toContain("Price: unavailable");
-    await call(client, "buy_number", { number: "14155550134", confirmation_code: preview.confirmation_code });
-    expect(writes(sent)).toHaveLength(1);
   });
 
   it("reads only the account on the call that carries the approval", async () => {
@@ -890,7 +892,7 @@ describe("cost in the approval preview", () => {
     const code = ((await call(client, "buy_number", { number: "14155550134" })).parsed as { confirmation_code: string }).confirmation_code;
     const lookups = sent.length;
     await call(client, "buy_number", { number: "14155550134", confirmation_code: code });
-    expect(sent.slice(lookups).map((r) => `${r.method} ${r.url}`)).toEqual([`GET ${ACCOUNT}`, `POST ${ACCOUNT}PhoneNumber/14155550134/`]);
+    expect(sent.slice(lookups).map((r) => `${r.method} ${r.url}`)).toEqual([`GET ${ACCOUNT}`, `POST ${API}/v1/Account/${ORG_A}/PhoneNumber/14155550134/`]);
   });
 
   it("does not let an account name add a line to the preview", async () => {
@@ -911,7 +913,7 @@ describe("organizations", () => {
 
   /** An auth proxy whose token starts on Acme and may move to Beta; `state` lets a test move it, rename an organization or break a route. */
   function orgSetup(env: Partial<Env> = {}, routes: { list?: Reply; post?: Reply } = {}) {
-    const state: { current: string; names: Record<string, string>; account?: Reply; list?: Reply } = { current: ORG_A, names: { [ORG_A]: "Acme", [ORG_B]: "Beta" }, list: routes.list };
+    const state: { current: string; names: Record<string, string>; account?: Reply; list?: Reply; write?: Reply } = { current: ORG_A, names: { [ORG_A]: "Acme", [ORG_B]: "Beta" }, list: routes.list };
     const ok = (data: unknown): Reply => ({ status: 200, body: { api_id: "x", data, errors: null } });
     const org = (id: string) => ({ auth_id: id, name: state.names[id], region: "us-east-1" });
     const ctx = setup(env, (url, req) => {
@@ -922,7 +924,7 @@ describe("organizations", () => {
         return ok(org(state.current));
       }
       if (url === PROBE) return state.account ?? { status: 200, body: { auth_id: state.current, name: state.names[state.current] } };
-      return { status: 200, body: { api_id: "x" } };
+      return state.write ?? { status: 200, body: { api_id: "x" } };
     });
     return { ...ctx, state };
   }
@@ -1001,6 +1003,17 @@ describe("organizations", () => {
     expect(writes(sent)).toEqual([SWITCHED]);
   });
 
+  it("addresses an approved write to the approved organization, and says so when the auth proxy finds the connection has moved", async () => {
+    const { toWorker, sent, state } = orgSetup();
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    state.write = failed(403, { global_error: "Token cannot operate on a different account" });
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: code });
+    expect(writes(sent).map((r) => r.url)).toEqual([`${API}/v1/Account/${ORG_A}/Message/`]);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("another organization");
+  });
+
   it("does not let a dialog answered after a switch run", async () => {
     const { toWorker, sent, state } = orgSetup();
     const { client } = await connectWithDialog(toWorker, APPROVED, { manual: true });
@@ -1035,6 +1048,7 @@ describe("organizations", () => {
     ["a refused organization", { post: failed(403, { error: "organization_not_allowed", global_error: "This sign-in cannot switch to that organization" }) }, "allowed at sign-in"],
     ["a token that is not an MCP sign-in, with the auth proxy's reason", { list: failed(403, { global_error: "Token is not a Plivo MCP sign-in" }) }, "(HTTP 403): Token is not a Plivo MCP sign-in."],
     ["an older auth proxy without the routes", { list: failed(404, { global_error: "Path not supported by agent-token proxy" }) }, "not available"],
+    ["a gateway error on the switch, whose outcome is unknown", { post: { status: 502, body: "Bad Gateway" } }, "could not be confirmed"],
   ])("answers %s as a tool error, not a sign-in challenge", async (_, routes, says) => {
     const { toWorker } = orgSetup({ ...OAUTH, CONFIRMATION_MODE: "allow" }, routes);
     const res = await call(await connect(toWorker), "switch_organization", { organization: ORG_B });

@@ -44,9 +44,10 @@ expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ 
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
 
 Every approval names the account it will run on (Auth ID and name) and is kept with that Auth ID. The account is
-read again when the answer arrives, and the request is sent only if the connection is still on that account. A token
-without the account permission is named from the organizations route instead; if Plivo cannot say which account the
-connection is on, nothing is asked or sent.
+read again when the answer arrives, and the request is sent only if the connection is still on that account. An
+approved request is addressed to that Auth ID rather than `me`, so the auth proxy itself refuses it if a switch lands
+after the check. A token without the account permission is named from the organizations route instead; if Plivo
+cannot say which account the connection is on, nothing is asked or sent.
 
 ## Organizations
 
