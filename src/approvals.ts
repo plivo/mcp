@@ -5,9 +5,9 @@
 export interface Approvals {
   /**
    * Spends an approval: "ok" the first time, "used" after that. "absent" is a proxy without the endpoint, which
-   * is what a rollout looks like until the proxy is deployed.
+   * is what a rollout looks like until the proxy is deployed. "rejected" is a token the proxy no longer accepts.
    */
-  consume(id: string, authorization: string): Promise<"ok" | "used" | "absent" | "failed">;
+  consume(id: string, authorization: string): Promise<"ok" | "used" | "absent" | "rejected" | "failed">;
   /** Registers an action for the user to approve in the Plivo console, and returns the page to approve it on. */
   create(digest: string, action: string, authorization: string): Promise<{ id: string; url: string; expiresInSeconds?: number } | "absent" | "failed">;
   /**
@@ -49,6 +49,7 @@ export function proxyApprovals(loginBase: string, fetchImpl: typeof fetch = fetc
       await res.body?.cancel();
       if (res.status === 200) return "ok";
       if (res.status === 409) return "used";
+      if (res.status === 401) return "rejected";
       return res.status === 404 ? "absent" : "failed";
     },
     async create(digest, action, authorization) {
@@ -77,8 +78,11 @@ export function proxyApprovals(loginBase: string, fetchImpl: typeof fetch = fetc
   };
 }
 
-/** An approval's id at the proxy: a hash, so the signed approval itself never leaves this server. */
-export async function approvalId(proof: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(proof));
+/**
+ * An approval's id at the proxy: a hash of its signed nonce. The signed string itself verifies in several
+ * spellings (padding, whitespace, spare bits), so hashing it would give one approval many ids.
+ */
+export async function approvalId(nonce: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(nonce));
   return btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
