@@ -122,7 +122,7 @@ td:last-child,th:last-child{padding-right:0}
 }
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 
-:root{--cta-hover:hsl(235 99% 59%);--cta-hover-text:#fff;--bg:#fff;--text:hsl(240 5% 26%);--accent:hsl(235 99% 59%);--line:hsl(240 6% 90%);--brand:hsl(240 10% 4%);--line-strong:hsl(240 6% 80%);--code-bg:hsl(240 5% 96%);--line-2:hsl(240 6% 90%);--note-line:hsl(240 6% 90%);--btn:hsl(240 10% 4%);--btn-hover:hsl(240 6% 22%);--btn-text:#fff;--muted:hsl(240 4% 42%);--strong:hsl(240 10% 4%);--head:hsl(240 10% 4%);--faint:hsl(240 5% 65%);--subtle:hsl(240 4% 44%);--pre:hsl(240 10% 12%);--icon:hsl(240 4% 44%);--soft:hsl(240 5% 98%);--row:hsl(240 6% 93%);--ok:#0f7b4f;--dot:hsl(235 99% 59%)}
+:root{--cta-hover:#323dfe;--cta-hover-text:#fff;--bg:#fff;--text:hsl(240 5% 26%);--accent:hsl(235 99% 59%);--line:hsl(240 6% 90%);--brand:hsl(240 10% 4%);--line-strong:hsl(240 6% 80%);--code-bg:hsl(240 5% 96%);--line-2:hsl(240 6% 90%);--note-line:hsl(240 6% 90%);--btn:hsl(240 10% 4%);--btn-hover:hsl(240 6% 22%);--btn-text:#fff;--muted:hsl(240 4% 42%);--strong:hsl(240 10% 4%);--head:hsl(240 10% 4%);--faint:hsl(240 5% 65%);--subtle:hsl(240 4% 44%);--pre:hsl(240 10% 12%);--icon:hsl(240 4% 44%);--soft:hsl(240 5% 98%);--row:hsl(240 6% 93%);--ok:#0f7b4f;--dot:hsl(235 99% 59%)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:hsl(225 18% 5%);--text:hsl(240 5% 80%);--accent:hsl(235.6 100% 74%);--line:hsl(225 12% 18%);--brand:hsl(240 5% 96%);--line-strong:hsl(225 10% 28%);--code-bg:hsl(225 14% 11%);--line-2:hsl(225 12% 18%);--note-line:hsl(225 12% 18%);--btn:hsl(240 5% 96%);--btn-hover:#fff;--btn-text:hsl(225 18% 5%);--muted:hsl(240 4% 64%);--strong:hsl(240 5% 96%);--head:hsl(240 5% 96%);--faint:hsl(225 8% 42%);--subtle:hsl(240 4% 58%);--pre:hsl(240 5% 90%);--icon:hsl(240 4% 58%);--soft:hsl(225 15% 8%);--row:hsl(225 12% 14%);--ok:#5fd3a0;--dot:hsl(235.6 100% 65.5%)}}
 :root[data-theme=dark]{--bg:hsl(225 18% 5%);--text:hsl(240 5% 80%);--accent:hsl(235.6 100% 74%);--line:hsl(225 12% 18%);--brand:hsl(240 5% 96%);--line-strong:hsl(225 10% 28%);--code-bg:hsl(225 14% 11%);--line-2:hsl(225 12% 18%);--note-line:hsl(225 12% 18%);--btn:hsl(240 5% 96%);--btn-hover:#fff;--btn-text:hsl(225 18% 5%);--muted:hsl(240 4% 64%);--strong:hsl(240 5% 96%);--head:hsl(240 5% 96%);--faint:hsl(225 8% 42%);--subtle:hsl(240 4% 58%);--pre:hsl(240 5% 90%);--icon:hsl(240 4% 58%);--soft:hsl(225 15% 8%);--row:hsl(225 12% 14%);--ok:#5fd3a0;--dot:hsl(235.6 100% 65.5%)}
 .brand span{font:400 11px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--subtle)}
@@ -142,11 +142,11 @@ td:last-child,th:last-child{padding-right:0}
 .hero .hint{margin:14px 0 0;font:400 12px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--subtle)}
 .cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px}
 .btn{display:inline-flex;align-items:center;gap:10px;height:42px;padding:0 18px;border:1px solid var(--line-strong);border-radius:2px;font:500 12px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--strong)}
-.btn{transition:color .15s,background-color .15s,border-color .15s}
-.btn:hover{border-color:var(--faint);background:var(--code-bg)}
+.btn{transition:background-color .15s ease-in-out,color .15s ease-in-out,border-color .15s ease-in-out,transform 50ms ease-in-out}
+.btn:hover{border-color:var(--cta-hover);background:var(--cta-hover);color:var(--cta-hover-text)}
+.btn:active{transform:translateY(1px)}
 .btn-primary{border-color:var(--btn);background:var(--btn);color:var(--btn-text)}
 .btn-primary::after{content:"\\2192";letter-spacing:0;font-size:14px;transition:transform .15s}
-.btn-primary:hover{border-color:var(--cta-hover);background:var(--cta-hover);color:var(--cta-hover-text)}
 .btn-primary:hover::after{transform:translateX(2px)}
 .demo{position:relative;overflow:hidden;margin:0;border:1px solid var(--line-strong);border-radius:2px;background:var(--soft);font-size:14px;line-height:22px}
 .demo-alt{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
