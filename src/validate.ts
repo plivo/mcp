@@ -1,5 +1,5 @@
 import type { Operation } from "./catalog";
-import { HIDDEN, secretNamed, type CallArgs } from "./upstream";
+import { HIDDEN, pairName, secretNamed, type CallArgs } from "./upstream";
 
 // One approval must not reach a crowd: Plivo takes up to 1,000 destinations in one `to`.
 export const MAX_DESTINATIONS = 10;
@@ -85,7 +85,7 @@ function list(v: unknown): string[] | undefined {
 function hiddenMarkerUnder(v: unknown, under?: string, depth = 0): string | undefined {
   if (depth > 50) return undefined;
   if (typeof v === "string") {
-    if (v === HIDDEN) return under;
+    if (under !== undefined && v.toLowerCase().includes(HIDDEN)) return under;
     if (!/^\s*[[{]/u.test(v)) return undefined;
     try {
       return hiddenMarkerUnder(JSON.parse(v), under, depth + 1);
@@ -96,7 +96,7 @@ function hiddenMarkerUnder(v: unknown, under?: string, depth = 0): string | unde
   if (v === null || typeof v !== "object") return undefined;
   if (Array.isArray(v)) return v.map((x) => hiddenMarkerUnder(x, under, depth + 1)).find(Boolean);
   const fields = Object.entries(v);
-  const name = fields.find(([k, x]) => /^(name|key)$/iu.test(k) && typeof x === "string" && secretNamed(x))?.[1] as string | undefined;
+  const name = pairName(fields);
   return fields
     .map(([k, x]) => hiddenMarkerUnder(x, under ?? (secretNamed(k) ? k : /^value$/iu.test(k) ? name : undefined), depth + 1))
     .find(Boolean);

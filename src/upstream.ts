@@ -130,7 +130,7 @@ const PIN_KEY = /(^|[_-])pin$/iu;
 // A number under one of these can be the credential itself; under `token` it is a count or a lifetime.
 const NUMBER_KEYS = new RegExp(`passw|pwd|passphrase|secret|${PIN_KEY.source}`, "iu");
 // Inside an error, `authorization: "missing"` is the reason, not a credential.
-const IN_ERROR_KEYS = /passw|pwd|passphrase|secret|api[_-]?key|private[_-]?key/iu;
+const ERROR_REASON_KEY = /^authorization$/iu;
 const ERROR_KEY = /^(errors?|message)$/iu;
 // Named after a secret, yet state about it or a cursor the model must send back.
 const STATE_OR_CURSOR = /[_-](status|enabled|count|type|at|id)$|(^|[_-])(next|page|continuation|cursor|pagination)[_-]?token$/iu;
@@ -140,13 +140,29 @@ const MAX_DEPTH = 50;
 const LOOKS_LIKE_JSON = /^\s*[[{]/u;
 const WITHHELD = "Plivo's reply was too large to show safely. Narrow the request with limit/offset or filters.";
 
+const SCHEMA_KEYWORDS = new Set(
+  "type description title format enum default examples pattern items properties required minLength maxLength $ref anyOf oneOf allOf nullable readOnly writeOnly".split(" "),
+);
+
 /** Whether a key names a credential, before the exceptions a reply needs. */
 export const secretNamed = (key: string) => SECRET_KEY.test(key) || PIN_KEY.test(key);
+
+/** The secret name beside a `value`, the way a list of headers is written: any `name` or `key` field may hold it. */
+export function pairName(fields: [string, unknown][], secret: (name: string) => boolean = secretNamed): string | undefined {
+  return fields.map(([k, x]) => (/^(name|key)$/iu.test(k) && typeof x === "string" && secret(x) ? x : undefined)).find(Boolean);
+}
+
+function schemaNode(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  const typed = typeof o.type === "string" || (Array.isArray(o.type) && o.type.every((t) => typeof t === "string"));
+  return typed || ["$ref", "anyOf", "oneOf", "allOf", "enum"].some((k) => Object.hasOwn(o, k));
+}
 
 type Hide = "nothing" | "text" | "text and numbers";
 
 function hideUnder(key: string, inError: boolean): Hide {
-  if (!(inError ? IN_ERROR_KEYS.test(key) : secretNamed(key)) || STATE_OR_CURSOR.test(key)) return "nothing";
+  if (!secretNamed(key) || STATE_OR_CURSOR.test(key) || (inError && ERROR_REASON_KEY.test(key))) return "nothing";
   return NUMBER_KEYS.test(key) ? "text and numbers" : "text";
 }
 
@@ -154,22 +170,25 @@ function hideUnder(key: string, inError: boolean): Hide {
  * A reply with its credential fields blanked at any depth: an endpoint read returns the SIP password. Only a value
  * that could be a credential is hidden: text under a secret-named key, a number under a password-like one, and the
  * `value` beside a secret-named `name` or `key`, the way a list of headers is written. JSON held in a text field is
- * searched too. A JSON Schema's `properties` name fields without holding them, so their names hide nothing.
+ * searched too. A JSON Schema node under `properties` describes a field without holding it, so its keywords stay.
  */
 export function hideSecrets(v: unknown, hide: Hide = "nothing", depth = 0, inError = false, count = false, schema = false): unknown {
   if (depth > MAX_DEPTH) return HIDDEN;
   if (Array.isArray(v)) return v.map((x) => hideSecrets(x, hide, depth + 1, inError, count));
   if (v !== null && typeof v === "object") {
     const fields = Object.entries(v);
-    const name = fields.find(([k, x]) => /^(name|key)$/iu.test(k) && typeof x === "string")?.[1] as string | undefined;
-    const under = (k: string, x: unknown): Hide => {
-      if (hide !== "nothing") return hide;
-      if (schema && x !== null && typeof x === "object") return "nothing";
-      return hideUnder(/^value$/iu.test(k) && name !== undefined ? name : k, inError);
-    };
+    const name = pairName(fields, (n) => hideUnder(n, inError) !== "nothing");
+    const under = (k: string): Hide => (hide !== "nothing" ? hide : hideUnder(/^value$/iu.test(k) && name !== undefined ? name : k, inError));
+    const next = (k: string, x: unknown, h: Hide) => hideSecrets(x, h, depth + 1, inError || ERROR_KEY.test(k), COUNT_KEY.test(k), /^properties$/iu.test(k));
     // fromEntries defines "__proto__" as a field; assignment would drop it.
     return Object.fromEntries(
-      fields.map(([k, x]) => [k, hideSecrets(x, under(k, x), depth + 1, inError || ERROR_KEY.test(k), COUNT_KEY.test(k), /^properties$/iu.test(k))]),
+      fields.map(([k, x]) => {
+        if (!schema || hide !== "nothing" || !schemaNode(x)) return [k, next(k, x, under(k))];
+        // A schema describes the field named k; only a default or an example of it can be a real value.
+        const rest = (word: string) => (under(k) !== "nothing" ? under(k) : SCHEMA_KEYWORDS.has(word) ? "nothing" : under(word));
+        const described = Object.entries(x).map(([word, d]) => [word, next(word, d, SCHEMA_KEYWORDS.has(word) && !/^(default|examples)$/u.test(word) ? "nothing" : rest(word))]);
+        return [k, Object.fromEntries(described)];
+      }),
     );
   }
   if (hide !== "nothing") {

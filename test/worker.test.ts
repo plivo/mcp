@@ -761,9 +761,31 @@ describe("credential fields in Plivo's replies", () => {
     ["a boolean under any name", { token: true, has_password: false, secret: true, auth: { jwt: true } }],
     ["cursors", { next_token: "c1", next_page_token: "c2", page_token: "c3", next: "c4", cursor: "c5", continuation_token: "c6" }],
     ["counts and usage, as numbers or numeric text", { prompt_tokens: 12, completion_tokens: "34", total_tokens: 46, token_count: "46", max_tokens: "100", token: 5 }],
-    ["the reason in an error", { errors: { authorization: "missing header", token: ["is invalid"] }, error: "bad token", message: { cookie: "expired" } }],
+    ["the reason in an error", { errors: { authorization: "missing header", token_status: "expired" }, error: "bad token", message: "token expired" }],
+    ["a schema property that only looks like data", { properties: { api_key: { type: ["string", "null"], title: "Key", enum: ["a"], minLength: 1 }, token: { $ref: "#/defs/t" }, password: { anyOf: [{ type: "string" }] } } }],
   ])("hideSecrets leaves alone %s", (_, body) => {
     expect(hideSecrets(body)).toEqual(body);
+  });
+
+  it.each<[string, unknown, unknown]>([
+    ["a token inside an error", { errors: { access_token: "abc", auth_token: "abc" }, error: { message: "x", token: "t" }, message: { token: "x", cookie: "c" } }, { errors: { access_token: H, auth_token: H }, error: { message: "x", token: H }, message: { token: H, cookie: H } }],
+    ["a token inside an error held as JSON text", { body: '{"errors":{"bearer":"abc"}}' }, { body: `{"errors":{"bearer":"${H}"}}` }],
+    ["a header pair whose secret name is not the first name-like field", [{ key: "id", name: "Authorization", value: "Bearer x" }, { name: "id", key: "password", value: "zz" }], [{ key: "id", name: "Authorization", value: H }, { name: "id", key: "password", value: H }]],
+    ["data kept under a key called properties", { properties: { api_key: { value: "abc" }, password: ["abc"], token: { kind: "string", type: 5 } } }, { properties: { api_key: { value: H }, password: [H], token: { kind: H, type: 5 } } }],
+    [
+      "a real value in a schema node for a secret field",
+      { properties: { api_key: { type: "string", default: "abc", examples: ["abc"], value: "abc" }, region: { type: "string", default: "us", password: "abc" } } },
+      { properties: { api_key: { type: "string", default: H, examples: [H], value: H }, region: { type: "string", default: "us", password: H } } },
+    ],
+  ])("hideSecrets hides %s", (_, body, shown) => {
+    expect(hideSecrets(body)).toEqual(shown);
+  });
+
+  it("gives back an agent that can be sent as its own update", () => {
+    const agent = { agent_id: "a1", name: "Support", nodes: [{ id: "n1", type: "llm", config: { api_key: KEPT, headers: [{ name: "Authorization", value: KEPT }], auth_params: `{"password":"${KEPT}"}`, max_tokens: 100 } }], connections: [{ source: "n1.out", target: "n2.in" }] };
+    const read = hideSecrets(agent) as typeof agent;
+    expect(read).toEqual(agent);
+    expect(inputError(getOperation("POST /AgentFlow/{agent_id}/")!, { params: { name: read.name, nodes: read.nodes, connections: read.connections } })).toBeUndefined();
   });
 
   it("still hides a real value beside each of those", () => {
@@ -882,6 +904,11 @@ describe("a write that would send this server's own hidden marker as a credentia
   it.each<[string, string, Record<string, unknown>, string]>([
     ["an endpoint password read back", "POST /Endpoint/{endpoint_id}/", { password: H }, "password"],
     ["a node config, nested", "POST /AgentFlow/{agent_id}/", { nodes: [{ id: "n1", config: { model: { Api_Key: H } } }], connections: [] }, "Api_Key"],
+    ["the marker with spaces around it", "POST /Endpoint/{endpoint_id}/", { password: ` ${H} ` }, "password"],
+    ["the marker in other letter case", "POST /Endpoint/{endpoint_id}/", { password: H.toUpperCase() }, "password"],
+    ["the marker after a scheme word", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { authorization: `Bearer ${H}` } }] }, "authorization"],
+    ["the marker inside a longer value", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { private_key: ["-".repeat(5), "BEGIN\n", H].join("") } }] }, "private_key"],
+    ["a header pair whose secret name comes second", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { headers: [{ key: "id", name: "Authorization", value: `Bearer ${H}` }] } }] }, "Authorization"],
     ["a header-style pair", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { headers: [{ name: "Authorization", value: H }] } }] }, "Authorization"],
     ["JSON text in a node config", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { auth_params: `{"token":"${H}"}` } }] }, "token"],
     ["everything under a secret-named field", "POST /AgentFlow/", { nodes: [{ config: { secrets: { main: [H] } } }] }, "secrets"],
@@ -899,7 +926,7 @@ describe("a write that would send this server's own hidden marker as a credentia
 
   it.each<[string, Record<string, unknown>]>([
     ["Plivo's own placeholder for a stored secret", { nodes: [{ config: { api_key: `${"*".repeat(3)}REDACTED${"*".repeat(3)}` } }] }],
-    ["the marker as ordinary text", { name: H, nodes: [{ config: { greeting: H } }] }],
+    ["the marker as ordinary text", { name: H, nodes: [{ config: { greeting: `Say ${H} to the caller` } }] }],
   ])("lets through %s", (_, params) => {
     expect(check("POST /AgentFlow/{agent_id}/", params)).toBeUndefined();
   });
