@@ -19,7 +19,7 @@ const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
 const SIP_PASSWORD = "x".repeat(10);
 
 const OAUTH = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-// The account read the Worker asks the auth proxy for before it answers a request that would not reach the proxy.
+// The account read the Worker asks the auth proxy for before it answers any request.
 const PROBE = `${API}/v1/Account/me/`;
 const REFUSED: Reply = { status: 401, body: { error: { global_error: "Token is unknown or expired" } }, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } };
 
@@ -193,7 +193,7 @@ describe.each([
   });
 });
 
-describe("a token is checked with the auth proxy before the handshake is answered", () => {
+describe("a token is checked with the auth proxy before the Worker answers", () => {
   const rpc = (toWorker: typeof fetch, method: string, params: unknown = {}) =>
     toWorker("http://localhost/mcp", {
       method: "POST",
@@ -206,12 +206,16 @@ describe("a token is checked with the auth proxy before the handshake is answere
     ["initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } }],
     ["tools/list", {}],
     ["tools/call", { name: "plivo_api_search", arguments: { query: "send an sms" } }],
-  ])("a made-up token gets the sign-in 401 on %s", async (method, params) => {
-    const { toWorker } = setup(OAUTH, REFUSED);
+    ["tools/call", { name: "make_call", arguments: {} }],
+    ["tools/call", { name: "plivo_api_read", arguments: { id: "bogus" } }],
+    ["tools/call", { name: "hangup_call", arguments: { call_uuid: "c1" } }],
+  ])("a made-up token gets the sign-in 401 on %s %j", async (method, params) => {
+    const { toWorker, sent } = setup(OAUTH, REFUSED);
     const res = await rpc(toWorker, method, params);
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate")).toBe('Bearer error="invalid_token", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
     expect(await res.json()).toMatchObject({ error: "invalid_token" });
+    expect(sent.map((r) => r.url)).toEqual([PROBE]);
   });
 
   it("an expired token gets the sign-in 401 on a write that asks first, which sends nothing before it knows the organization", async () => {
@@ -235,12 +239,13 @@ describe("a token is checked with the auth proxy before the handshake is answere
     expect(replies.map((r) => r.status)).toEqual([401]);
   });
 
-  it("asks once a minute for a token the proxy accepts, and never before a tool call the proxy checks itself", async () => {
+  it("asks once a minute for a token the proxy accepts, tool calls included", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const { toWorker, sent } = setup(OAUTH);
       expect((await rpc(toWorker, "tools/call", { name: "plivo_api_read", arguments: { id: "GET /Call/" } })).status).toBe(200);
-      expect(sent.map((r) => r.url)).toEqual([`${API}/v1/Account/me/Call/`]);
+      expect((await rpc(toWorker, "tools/call", { name: "plivo_api_read", arguments: { id: "GET /Call/" } })).status).toBe(200);
+      expect(sent.map((r) => r.url)).toEqual([PROBE, `${API}/v1/Account/me/Call/`, `${API}/v1/Account/me/Call/`]);
 
       for (const mode of [undefined, { pin: "2026-07-28" as const }]) {
         const client = await connect(toWorker, STK, mode);
