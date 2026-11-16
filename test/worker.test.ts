@@ -790,6 +790,73 @@ describe("hardening", () => {
     });
   });
 
+  const BROWSER = { headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" } };
+  const PAGE_POLICY = (style: string[], script: string[]) =>
+    `default-src 'none'; style-src ${style.join(" ")} https://fonts.googleapis.com; font-src https://fonts.gstatic.com; ` +
+    `script-src ${script.join(" ")}; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+
+  it("shows a browser that opens / the landing page, under a policy that names each inline style and script by hash", async () => {
+    const res = await setup().toWorker("http://localhost/", BROWSER);
+    expect(res.status).toBe(200);
+    expect(Object.fromEntries(["Content-Type", "Vary", "Strict-Transport-Security", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"].map((h) => [h, res.headers.get(h)]))).toEqual({
+      "Content-Type": "text/html; charset=utf-8",
+      Vary: "Accept",
+      "Strict-Transport-Security": "max-age=31536000",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "no-referrer",
+    });
+    const html = await res.text();
+    expect(html).toContain("https://mcp.plivo.com/mcp");
+    const hashes = (tag: string) =>
+      Promise.all(
+        [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))].map(
+          async (m) => `'sha256-${btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(m[1])))))}'`,
+        ),
+      );
+    const [style, script] = [await hashes("style"), await hashes("script")];
+    // A block with attributes, an inline handler or a style attribute would be outside the hashes, and so blocked.
+    expect(html.match(/<(style|script)\b/g)).toHaveLength(style.length + script.length);
+    expect(html).not.toMatch(/ style="| on[a-z]+="/);
+    expect(res.headers.get("Content-Security-Policy")).toBe(PAGE_POLICY(style, script));
+  });
+
+  it("answers a browser's HEAD / with the page's headers and no body", async () => {
+    const res = await setup().toWorker("http://localhost/", { ...BROWSER, method: "HEAD" });
+    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("Content-Security-Policy")).toContain("script-src 'sha256-");
+    expect(await res.text()).toBe("");
+  });
+
+  it.each<[string, RequestInit]>([
+    ["a client that sends no Accept header", {}],
+    ["a client that asks for JSON", { headers: { Accept: "application/json" } }],
+    ["a POST that accepts HTML", { ...BROWSER, method: "POST" }],
+  ])("still answers %s on / with the one plain line", async (_, init) => {
+    const res = await setup().toWorker("http://localhost/", init);
+    expect(res.headers.get("Content-Type")).toBe("text/plain");
+    expect(await res.text()).toBe("Plivo MCP server. Connect an MCP client to /mcp.\n");
+    expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+  });
+
+  it("does not show the page on /mcp, where a browser still gets the sign-in challenge", async () => {
+    const res = await setup().toWorker("http://localhost/mcp", BROWSER);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toContain("Bearer");
+    expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'; frame-ancestors 'none'");
+  });
+
+  it("names on the page every tool the server lists, with the right count, and no more operations than the catalog has", async () => {
+    const { toWorker } = setup();
+    const html = await (await toWorker("http://localhost/", BROWSER)).text();
+    const { tools } = await (await connect(toWorker)).listTools();
+    expect(html).toContain(`Your app gets ${tools.length} tools`);
+    expect(html).toContain(`<span data-to="${tools.length}">${tools.length}</span>`);
+    for (const t of tools) expect(html).toContain(`<code>${t.name}</code>`);
+    expect(html).toContain('<span data-to="130">130</span><b>+</b>');
+    expect(catalogData.operations.length).toBeGreaterThanOrEqual(130);
+  });
+
   it("keeps security headers on a tool call's reply", async () => {
     const replies: Response[] = [];
     const { toWorker } = setup();
