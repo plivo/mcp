@@ -119,6 +119,55 @@ export interface UpstreamResult {
   scopeMissing?: boolean;
 }
 
+export const SECRET_KEY = new RegExp(
+  ["token", "password", "passwd", "pwd", "passphrase", "secret", "api[_-]?key", "private[_-]?key", "authorization", "bearer", "jwt", "cookie"].join("|"),
+  "iu",
+);
+// A cursor the model must send back to read the next page.
+const CURSOR_KEY = /page[_-]?token$/iu;
+// A count, as in `prompt_tokens: 12`.
+const COUNT_KEY = /tokens$/iu;
+const HIDDEN = "[hidden]";
+const MAX_DEPTH = 50;
+const LOOKS_LIKE_JSON = /^\s*[[{]/u;
+const WITHHELD = "Plivo's reply was too large to show safely. Narrow the request with limit/offset or filters.";
+
+const holdsSecret = (key: string) => SECRET_KEY.test(key) && !CURSOR_KEY.test(key);
+
+/**
+ * A reply with its credential fields blanked at any depth: an endpoint read returns the SIP password. Under a
+ * secret-named key everything but null and "" is hidden, and so is the `value` beside a secret-named `name` or `key`,
+ * the way a list of headers is written. JSON held in a text field is searched too.
+ */
+export function hideSecrets(v: unknown, secret = false, depth = 0): unknown {
+  if (depth > MAX_DEPTH) return HIDDEN;
+  if (Array.isArray(v)) return v.map((x) => hideSecrets(x, secret, depth + 1));
+  if (v !== null && typeof v === "object") {
+    const fields = Object.entries(v);
+    const named = fields.some(([k, x]) => /^(name|key)$/iu.test(k) && typeof x === "string" && holdsSecret(x));
+    const hidden = (k: string, x: unknown) =>
+      secret || (named && /^value$/iu.test(k)) || (holdsSecret(k) && !(typeof x === "number" && COUNT_KEY.test(k)));
+    // fromEntries defines "__proto__" as a field; assignment would drop it.
+    return Object.fromEntries(fields.map(([k, x]) => [k, hideSecrets(x, hidden(k, x), depth + 1)]));
+  }
+  if (secret) return v === null || v === undefined || v === "" ? v : HIDDEN;
+  if (typeof v !== "string" || !LOOKS_LIKE_JSON.test(v)) return v;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return v;
+  }
+  const shown = JSON.stringify(hideSecrets(parsed, false, depth + 1));
+  return shown === JSON.stringify(parsed) ? v : shown;
+}
+
+/** A body cut at the size limit no longer parses, so its secrets cannot be found field by field: it is not shown at all. */
+function clippedSecrets(text: string): boolean {
+  const plain = text.replace(/\\u([0-9a-f]{4})/giu, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return LOOKS_LIKE_JSON.test(text) && SECRET_KEY.test(plain);
+}
+
 const TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -147,13 +196,14 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     body = JSON.parse(text);
   } catch {
     // Non-JSON bodies (rare error pages, or a clipped body) are returned as text.
+    if (clippedSecrets(text)) body = WITHHELD;
   }
   // The proxy marks its own token refusals; Plivo's 401 for the account behind a valid token must not
   // send the client into a sign-in loop.
   const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
   // The proxy names the missing module under errors.required_module; Plivo's own 403s use `error` and never carry it.
   const scopeMissing = res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
-  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
+  return { status: res.status, ok: res.ok, body: hideSecrets(body), ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
 }
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */
