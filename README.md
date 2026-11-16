@@ -20,6 +20,8 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `plivo_api_read` | Call a `GET` operation |
 | `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
+| `diagnose_call` | Ask Plivo's support assistant what happened on a call, from traces the API does not expose |
+| `diagnose_message` | Ask Plivo's support assistant why a message failed or what its status means |
 | `list_organizations` | List the organizations the connection may use and which one is current |
 | `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
@@ -28,12 +30,19 @@ Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `se
 catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
 catalog, and the Worker refuses to start if a listed operation or param is missing from it.
 
+The diagnose tools first check that the call or message is on the account, then send only its id to the auth proxy,
+which asks Plivo's support assistant a fixed question and streams the answer back (30 seconds to 2 minutes for a
+call). The assistant is told not to file a support ticket or change the account; the result says if it tried
+(`src/diagnose.ts`). Because it can still file one, the tools are not marked read-only. They need the auth proxy, so
+they refuse Basic auth.
+
 ## Confirmation
 
-Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
-approval, whichever tool makes them (`src/confirm.ts`). So do 16 free writes that keep working after the token
-is revoked or send traffic elsewhere: SIP endpoints, credentials, IP lists and trunks, origination URIs,
-creating an application, pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
+Calls that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
+approval, whichever tool makes them (`src/confirm.ts`); that includes the number and caller-name lookups, which only
+read. So do free writes that keep working after the token is revoked or send traffic elsewhere: SIP endpoints,
+credentials, IP lists and trunks, origination URIs, creating an application, pointing a number, application or
+Powerpack somewhere new, adding a number to a Powerpack, changing an AI agent, and transferring a live call (`ASKS_FIRST` in
 `src/confirm.ts`). The preview hides any field named like a password or secret. The first call sends nothing and returns
 `confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
 caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
@@ -47,7 +56,7 @@ writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on lo
 Every approval names the account it will run on (Auth ID and name) and is kept with that Auth ID. The account is
 read again when the answer arrives, and the request is sent only if the connection is still on that account. An
 approved request is addressed to that Auth ID rather than `me`, so the auth proxy itself refuses it if a switch lands
-after the check. A token without the account permission is named from the organizations route instead; if Plivo
+after the check (the Lookup paths carry no Auth ID, so there the check alone decides). A token without the account permission is named from the organizations route instead; if Plivo
 cannot say which account the connection is on, nothing is asked or sent.
 
 ## Organizations
@@ -61,8 +70,7 @@ current organization from the proxy on each call. A switch applies to calls made
 alongside it may run on either organization.
 
 A switch between an approval's question and its answer voids that approval. An organization outside the list is a
-plain tool error; changing the list takes a new sign-in. A switch code is reusable until it expires like any other
-(see Confirmation), so after A to B and back, the first code can move the connection to B again.
+plain tool error; changing the list takes a new sign-in.
 
 ## Sign-in
 
@@ -103,7 +111,7 @@ cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<
 - Plivo's docs export (`llms-full.txt`): params, types, required flags, descriptions
 - plivo-cli's source: which endpoints to expose (the CLI's surface) and which spend money (`guardSpend`)
 - `catalog/overrides.json`: reviewed decisions, each with a reason, and `extra_ops`: operations the CLI calls that the
-  docs do not describe (the Agents API), written from the CLI's commands and the server's validation
+  docs do not describe (the Agents API, CNAM lookups), written from the CLI's commands and the server's validation
 
 Each run also writes `catalog/REVIEW.md`: what was included and why, what was excluded, new scope modules
 the auth proxy needs, pricing to confirm, and param names where the docs and the SDKs disagree. The build fails on a
@@ -129,7 +137,8 @@ npm run typecheck
 
 To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.vars`, fill in `CONFIRM_SECRET`, and `npm run dev`, then
 point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
-Basic auth is for local development only; production accepts `stk_` tokens alone.
+Basic auth is for local development only; production accepts `stk_` tokens alone. Number lookups need the auth
+proxy's `/v1/Lookup/` route, so they fail under Basic auth.
 
 ## Deploy
 

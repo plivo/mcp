@@ -2,6 +2,8 @@
 // and authorization codes are HMAC-signed values. The login itself is Plivo's `plivo login` browser flow
 // with client=mcp, which ends in an stk_ scope token minted by the auth proxy.
 
+import { STK_RE } from "./upstream";
+
 export interface OAuthConfig {
   secret: string;
   loginBase: string;
@@ -20,6 +22,7 @@ export const OAUTH_PATHS = new Set([
   "/authorize",
   "/oauth/callback",
   "/token",
+  "/oauth/revoke",
 ]);
 
 const LOGIN_TTL_SECONDS = 600;
@@ -337,6 +340,40 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
   });
 }
 
+/**
+ * RFC 7009: ends the token an app is disconnecting. A token that cannot be one of ours answers 200, as the RFC
+ * asks; one that could be answers 200 only once the auth proxy has dealt with it, so a client is never told a
+ * live token is gone.
+ */
+async function revoke(request: Request, cfg: OAuthConfig): Promise<Response> {
+  const raw = await readBody(request);
+  if (raw === undefined) return oauthError("invalid_request", "body is too large");
+  const tokenValue = new URLSearchParams(raw).get("token");
+  if (!tokenValue) return oauthError("invalid_request", "token is required");
+  const authorization = `Bearer ${tokenValue}`;
+  if (STK_RE.test(authorization)) {
+    let status: number;
+    try {
+      const res = await (cfg.fetchImpl ?? fetch)(`${cfg.loginBase}/v1/accounts/cli/revoke`, {
+        method: "POST",
+        headers: { Authorization: authorization },
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      await res.body?.cancel();
+      status = res.status;
+    } catch {
+      return oauthError("temporarily_unavailable", "Plivo sign-in is unreachable; try again", 503);
+    }
+    // The proxy answers 200 for a live, expired or unknown token alike, and 401 for one it does not take as a token.
+    if (status !== 200 && status !== 401) {
+      console.error(`plivo-mcp: the auth proxy answered ${status} to a token revocation`);
+      return oauthError("temporarily_unavailable", "Plivo could not revoke the token; try again", 503);
+    }
+  }
+  return new Response(null, { status: 200, headers: CORS });
+}
+
 export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<Response> {
   const origin = new URL(cfg.publicOrigin);
   const path = new URL(request.url).pathname;
@@ -351,6 +388,8 @@ export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<R
       authorization_endpoint: `${origin.origin}/authorize`,
       token_endpoint: `${origin.origin}/token`,
       registration_endpoint: `${origin.origin}/register`,
+      revocation_endpoint: `${origin.origin}/oauth/revoke`,
+      revocation_endpoint_auth_methods_supported: ["none"],
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
@@ -362,5 +401,6 @@ export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<R
   if (request.method === "GET" && path === "/authorize") return authorize(request, origin, cfg);
   if (request.method === "GET" && path === "/oauth/callback") return callback(request, origin, cfg);
   if (request.method === "POST" && path === "/token") return token(request, cfg);
+  if (request.method === "POST" && path === "/oauth/revoke") return revoke(request, cfg);
   return new Response("Method not allowed\n", { status: 405 });
 }

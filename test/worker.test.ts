@@ -3,6 +3,7 @@ import { createRequestStateCodec, type ServerContext } from "@modelcontextprotoc
 import { describe, expect, it, vi } from "vitest";
 import { createWorker, type Env } from "../src/index";
 import { buildShortcuts, SHORTCUT_DEFS } from "../src/shortcuts";
+import { diagnoseTools } from "../src/diagnose";
 import { getOperation } from "../src/catalog";
 import { proxyApprovals } from "../src/approvals";
 import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
@@ -117,12 +118,22 @@ describe.each([
   ["2025 clients", undefined],
   ["2026-07-28 clients", { pin: "2026-07-28" as const }],
 ])("MCP tools for %s", (_, mode) => {
-  it("lists the four universal tools, search_docs and the shortcuts", async () => {
+  it("lists the four universal tools, search_docs, the shortcuts and the diagnose tools", async () => {
     const { toWorker } = setup();
     const client = await connect(toWorker, STK, mode);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["plivo_api_details", "plivo_api_read", "plivo_api_search", "plivo_api_write", "list_organizations", "search_docs", "switch_organization", ...SHORTCUT_DEFS.map((d) => d.name)].sort(),
+      [
+        "plivo_api_details",
+        "plivo_api_read",
+        "plivo_api_search",
+        "plivo_api_write",
+        "list_organizations",
+        "search_docs",
+        "switch_organization",
+        ...SHORTCUT_DEFS.map((d) => d.name),
+        ...diagnoseTools.map((d) => d.name),
+      ].sort(),
     );
   });
 
@@ -500,6 +511,20 @@ describe("confirmation", () => {
     expect(writes(sent)).toEqual([SENT_SMS]);
   });
 
+  it("asks before a read that costs money, then sends it to the proxy's Lookup path", async () => {
+    const { toWorker, sent } = setup();
+    const client = await connect(toWorker);
+    const args = { id: "GET lookup.plivo.com/v1/Number/{PhoneNumber}", path_params: { PhoneNumber: "14155550100" }, params: { type: "carrier" } };
+    const lookups = () => sent.filter((r) => r.url.includes("/v1/Lookup/"));
+    const preview = (await call(client, "plivo_api_read", args)).parsed as { status: string; action: string; confirmation_code: string };
+    expect(preview.status).toBe("confirmation_required");
+    expect(preview.action).toContain("Price: $0.004 per lookup.");
+    expect(lookups()).toHaveLength(0);
+
+    expect((await call(client, "plivo_api_read", { ...args, confirmation_code: preview.confirmation_code })).isError).toBe(false);
+    expect(lookups()).toEqual([{ url: `${API}/v1/Lookup/Number/14155550100?type=carrier`, method: "GET", auth: STK, body: undefined }]);
+  });
+
   it("a code approves only that request, for that caller, while it is fresh", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -783,14 +808,14 @@ const LOGIN = "http://127.0.0.1:8798";
 /**
  * A Worker whose auth proxy also keeps the approvals. `consume` overrides the status it answers a spend with;
  * `links` gives it the approval-link routes, `decide` plays the user on the console page, `answer`
- * replaces what an approval-link route answers, and `account` names the organization the token is on.
+ * replaces what an approval-link route answers, and `api` is the body of every other reply.
  */
 function setupWithProxy(
   consume?: () => number | Error,
   links = false,
   answer?: (route: "create" | "redeem") => Response | undefined,
   envOverrides: Partial<Env> = {},
-  account: () => string = () => ORG_A,
+  api: (url: string, body: unknown) => unknown = () => ({ api_id: "x", auth_id: ORG_A }),
 ) {
   const sent: Sent[] = [];
   const spent = new Set<string>();
@@ -824,7 +849,7 @@ function setupWithProxy(
       return json(200, { status: p.status });
     }
     sent.push({ url: u, method: init?.method ?? "GET", auth, body });
-    return new Response(JSON.stringify({ api_id: "x", auth_id: account() }), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify(api(u, body)), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   const worker = createWorker(upstream as typeof fetch);
   const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), ...envOverrides };
@@ -1320,6 +1345,28 @@ describe("organizations", () => {
     expect(res.raw).toContain("another organization");
   });
 
+  it("asks on the console page where the client has no dialog, and does not let a link approved on one organization run after the switch", async () => {
+    let current = ORG_A;
+    const org = (id: string) => ({ auth_id: id, name: id === ORG_A ? "Acme" : "Beta" });
+    const { toWorker, sent, decide } = setupWithProxy(undefined, true, undefined, {}, (url, body) => {
+      if (url === LIST) return { data: { organizations: [ORG_A, ORG_B].map((id) => ({ ...org(id), current: id === current })) } };
+      if (url === SWITCH) return { data: org((current = (body as { auth_id: string }).auth_id)) };
+      return { api_id: "x", auth_id: current };
+    });
+    const client = await connect(toWorker);
+    const sms = (await call(client, "send_sms", SMS)).parsed as { confirmation_code: string };
+    const move = (await call(client, "switch_organization", { organization: ORG_B })).parsed as { status: string; action: string; confirmation_code: string };
+    expect(move.status).toBe("approval_required");
+    expect(move.action).toContain(`To: Auth ID ${ORG_B} "Beta".`);
+    decide("approved");
+    expect((await call(client, "switch_organization", { organization: ORG_B, confirmation_code: move.confirmation_code })).parsed).toMatchObject({ status: "switched" });
+
+    const replay = await call(client, "send_sms", { ...SMS, confirmation_code: sms.confirmation_code });
+    expect(replay.isError).toBe(true);
+    expect(replay.raw).toContain("another organization");
+    expect(writes(sent).map((r) => r.url)).toEqual([SWITCH]);
+  });
+
   it("does not let a dialog answered after a switch run", async () => {
     const { toWorker, sent, state } = orgSetup();
     const { client } = await connectWithDialog(toWorker, APPROVED, { manual: true });
@@ -1360,5 +1407,116 @@ describe("organizations", () => {
     const res = await call(await connect(toWorker), "switch_organization", { organization: ORG_B });
     expect(res.isError).toBe(true);
     expect(res.raw).toContain(says);
+  });
+});
+
+function sse(...events: [string, unknown][]): string {
+  return events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, data })}\n\n`).join("");
+}
+
+// A stream that sends `first`, then drops the connection on the next read.
+function dropsAfter(first: string): () => ReadableStream<Uint8Array> {
+  return () => {
+    let sentFirst = false;
+    return new ReadableStream({
+      pull(c) {
+        if (sentFirst) return c.error(new TypeError("connection reset"));
+        sentFirst = true;
+        c.enqueue(new TextEncoder().encode(first));
+      },
+    });
+  };
+}
+
+function setupDiagnose(record: { status: number; body?: unknown }, chat: { status: number; body?: string | (() => ReadableStream<Uint8Array>) }, envOverrides: Partial<Env> = {}) {
+  const sent: Sent[] = [];
+  const upstream = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    sent.push({ url: String(url), method: init?.method ?? "GET", auth: new Headers(init?.headers).get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (String(url).includes("/v1/aiassist/diagnose/")) {
+      const body = typeof chat.body === "function" ? chat.body() : (chat.body ?? "");
+      return new Response(body, { status: chat.status, headers: { "Content-Type": "text/event-stream" } });
+    }
+    return new Response(JSON.stringify(record.body ?? {}), { status: record.status, headers: { "Content-Type": "application/json" } });
+  });
+  const worker = createWorker(upstream as typeof fetch);
+  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, ...envOverrides };
+  return { sent, toWorker: (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env) };
+}
+
+describe("diagnose", () => {
+  it("is not listed as read-only, since the assistant can file a support ticket", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const hints = tools.filter((t) => t.name.startsWith("diagnose_")).map((t) => t.annotations?.readOnlyHint);
+    expect(hints).toEqual([false, false]);
+  });
+
+  const answered = sse(["token", { text: "Dropped by " }], ["token", { text: "the callee." }], ["final", { answer: "Dropped by the callee." }]);
+  const escalation = (success?: boolean) =>
+    sse(["tool_call", { name: "escalate_to_support" }], ...(success === undefined ? [] : [["tool_output", { name: "escalate_to_support", success }] as [string, unknown]]), ["final", { answer: "Raised it." }]);
+
+  it.each([
+    ["diagnose_call", { call_uuid: "c-1" }, "Call/c-1/", {}, "call", { uuid: "c-1" }],
+    ["diagnose_message", { message_uuid: "m-1" }, "Message/m-1/", { message_type: "whatsapp" }, "message", { uuid: "m-1", channel: "whatsapp" }],
+  ])("%s checks the record, then sends only the id to the auth proxy's diagnose route", async (tool, args, recordPath, record, kind, ask) => {
+    const { sent, toWorker } = setupDiagnose({ status: 200, body: record }, { status: 200, body: answered });
+    const res = await call(await connect(toWorker), tool, args);
+    expect(res).toMatchObject({ isError: false, parsed: { ...args, answer: "Dropped by the callee." } });
+    expect(sent).toEqual([
+      { url: `${API}/v1/Account/me/${recordPath}`, method: "GET", auth: STK, body: undefined },
+      { url: `${API}/v1/aiassist/diagnose/${kind}`, method: "POST", auth: STK, body: ask },
+    ]);
+  });
+
+  it.each<[string, { status: number }, { status: number; body?: string | (() => ReadableStream<Uint8Array>) }, { isError: boolean; text?: string; parsed?: object }]>([
+    ["an id not on the account", { status: 404 }, { status: 200, body: answered }, { isError: true, text: "No call c-1 on this account" }],
+    ["the diagnose rate limit", { status: 200 }, { status: 429 }, { isError: true, text: "diagnose limit" }],
+    [
+      "an analysis the assistant could not finish",
+      { status: 200 },
+      { status: 200, body: sse(["message", { text: "No trace yet.\nANALYSIS_INCOMPLETE: trace unavailable" }], ["done", {}]) },
+      { isError: false, parsed: { incomplete: "trace unavailable" } },
+    ],
+    ["a ticket the assistant filed anyway", { status: 200 }, { status: 200, body: escalation(true) }, { isError: false, parsed: { notes: ["The assistant filed a Plivo support ticket for this."] } }],
+    ["a ticket the assistant failed to file", { status: 200 }, { status: 200, body: escalation(false) }, { isError: false, parsed: { notes: ["The assistant tried to file a Plivo support ticket; it was not filed."] } }],
+    ["an answer cut off mid-stream", { status: 200 }, { status: 200, body: sse(["token", { text: "The call" }]) }, { isError: false, parsed: { notes: ["The assistant's answer was cut off."] } }],
+    [
+      "a last frame cut off mid-JSON, keeping the answer before it",
+      { status: 200 },
+      { status: 200, body: sse(["token", { text: "The call dropped." }]) + 'event: final\ndata: {"type":"final","data":{"ans' },
+      { isError: false, parsed: { answer: "The call dropped.", notes: ["The assistant's answer was cut off."] } },
+    ],
+    [
+      "a ticket retried after a failure, its outcome unknown",
+      { status: 200 },
+      { status: 200, body: sse(["tool_call", { name: "escalate_to_support" }], ["tool_output", { name: "escalate_to_support", success: false }], ["tool_call", { name: "escalate_to_support" }], ["final", { answer: "Retrying." }]) },
+      { isError: false, parsed: { notes: ["The assistant started filing a Plivo support ticket; whether it was filed is unknown."] } },
+    ],
+    [
+      "a ticket filed, then a later attempt that failed",
+      { status: 200 },
+      { status: 200, body: sse(["tool_call", { name: "escalate_to_support" }], ["tool_output", { name: "escalate_to_support", success: true }], ["tool_call", { name: "escalate_to_support" }], ["tool_output", { name: "escalate_to_support", success: false }], ["final", { answer: "Done." }]) },
+      { isError: false, parsed: { notes: ["The assistant filed a Plivo support ticket for this."] } },
+    ],
+    [
+      "a dropped connection, keeping what arrived",
+      { status: 200 },
+      { status: 200, body: dropsAfter(escalation(true).split("event: final")[0] + sse(["token", { text: "So far" }])) },
+      { isError: false, parsed: { answer: "So far", notes: ["The assistant filed a Plivo support ticket for this.", "The assistant stopped answering; this is what arrived."] } },
+    ],
+    ["an assistant error with no answer", { status: 200 }, { status: 200, body: sse(["error", { error: "Debugger unavailable." }]) }, { isError: true, parsed: { error: "Debugger unavailable." } }],
+  ])("reports %s", async (_, record, chat, want) => {
+    const { sent, toWorker } = setupDiagnose(record, chat);
+    const res = await call(await connect(toWorker), "diagnose_call", { call_uuid: "c-1" });
+    expect(res.isError).toBe(want.isError);
+    if (want.text) expect(res.raw).toContain(want.text);
+    if (want.parsed) expect(res.parsed).toMatchObject(want.parsed);
+    if (record.status === 404) expect(sent).toHaveLength(1);
+  });
+
+  it("refuses Basic credentials, which never reach the assistant", async () => {
+    const { sent, toWorker } = setupDiagnose({ status: 200 }, { status: 200, body: answered }, { ALLOW_BASIC_AUTH: "true", PLIVO_API_BASE: "http://127.0.0.1:8799" });
+    const res = await call(await connect(toWorker, "Basic " + btoa("MAXXXXXXXXXXXXXXXXXX:secret")), "diagnose_call", { call_uuid: "c-1" });
+    expect(res).toMatchObject({ isError: true });
+    expect(sent).toHaveLength(0);
   });
 });

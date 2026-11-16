@@ -3,6 +3,7 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
 import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer } from "./confirm";
+import { diagnose, diagnoseTools } from "./diagnose";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
@@ -51,7 +52,7 @@ function describe(op: Operation) {
     call_with: op.method === "GET" ? "plivo_api_read" : "plivo_api_write",
     costs_money: op.costs_money,
     destructive: op.destructive,
-    needs_approval: op.method === "GET" ? [] : approvalReasons(op),
+    needs_approval: approvalReasons(op),
     path_params: op.path_params ?? [],
     params: op.params,
     fixed_query: op.fixed_query,
@@ -66,11 +67,11 @@ const callInput = z.object({
     .optional()
     .describe('Values for the {placeholders} in the path, e.g. {"message_uuid": "…"}. {auth_id} is filled in for you.'),
   params: z.record(z.string(), z.unknown()).optional().describe("Query params (GET) or JSON body fields (other methods), as listed by plivo_api_details"),
+  confirmation_code: confirmationCodeField,
 });
 
-const writeInput = callInput.extend({ confirmation_code: confirmationCodeField });
-
 const PRICE = /^\d+(\.\d+)?$/;
+const LOOKUP_OP = "GET lookup.plivo.com/v1/Number/{PhoneNumber}";
 
 // Short, so a slow lookup refuses quickly instead of adding its wait to the action's own.
 const LOOKUP_TIMEOUT_MS = 5_000;
@@ -132,6 +133,8 @@ async function approvalAccount(
   const balance = String(account?.cash_credits ?? "");
   const lines = [`Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.`];
   if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
+  // The Lookup API's published rate; the API itself returns no price.
+  if (op.id === LOOKUP_OP) lines.push("Price: $0.004 per lookup.");
   if (op.costs_money) lines.push("Taxes may apply.");
   return { id, lines };
 }
@@ -148,20 +151,20 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         `Common tasks have their own tools: ${shortcuts.map((s) => s.name).join(", ")}. ` +
         "For anything else, find an operation with plivo_api_search, read its params with plivo_api_details, then call it with " +
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
-        "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
-        "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
-        "never approve one on the user's behalf. Every call runs on the connection's current organization; " +
-        "list_organizations shows it and switch_organization changes it.",
+        "calls, error codes, setup guides), use search_docs. To find out why a call or message failed, use diagnose_call or " +
+        "diagnose_message. Actions that cost money, cannot be undone, give lasting access to the account, change where " +
+        "calls and messages go or change a live AI agent need the user's approval; never approve one on the user's behalf. " +
+        "Every call runs on the connection's current organization; list_organizations shows it and switch_organization changes it.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
 
-  async function call(kind: "read" | "write", args: z.infer<typeof writeInput>, reqCtx: ServerContext) {
+  async function call(kind: "read" | "write", args: z.infer<typeof callInput>, reqCtx: ServerContext) {
     const op = getOperation(args.id);
     if (!op) return text(`Unknown operation "${args.id}". Use plivo_api_search to find a valid id.`, true);
     if (kind === "read" && op.method !== "GET") return text(`${op.id} changes data; call it with plivo_api_write.`, true);
     if (kind === "write" && op.method === "GET") return text(`${op.id} is read-only; call it with plivo_api_read.`, true);
-    const reasons = kind === "write" ? approvalReasons(op) : [];
+    const reasons = approvalReasons(op);
     const needsConfirmation = reasons.length > 0;
     if (needsConfirmation && config.confirmationMode === "block") {
       return text(`${op.id} needs the user's approval (${reasons.join(" ")}), and this server is set to refuse such actions. Do it in the Plivo console instead.`, true);
@@ -265,7 +268,9 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     "plivo_api_read",
     {
       title: "Call a read-only Plivo API operation",
-      description: "Call a GET operation from the catalog (list or retrieve messages, calls, numbers, recordings, and more).",
+      description:
+        "Call a GET operation from the catalog (list or retrieve messages, calls, numbers, recordings, and more). " +
+        "Lookups that cost money need the user's approval first; plivo_api_details lists them as needs_approval.",
       inputSchema: callInput,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -280,7 +285,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "Call a POST, PATCH or DELETE operation from the catalog. Operations that cost money (sending messages, " +
         "making calls, buying numbers), cannot be undone, create SIP access, reroute calls and messages or change an AI " +
         "agent need the user's approval first; plivo_api_details lists the reasons as needs_approval.",
-      inputSchema: writeInput,
+      inputSchema: callInput,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     async (args, reqCtx) => call("write", args, reqCtx),
@@ -354,6 +359,19 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       s.name,
       { title: s.op.title, description: s.description, inputSchema: s.inputSchema, annotations: s.annotations },
       async (args, reqCtx) => call(s.kind, s.toCall(args), reqCtx),
+    );
+  }
+
+  // Not read-only: the assistant behind them can file a support ticket, and a client may skip its prompt for a read.
+  const diagnoseAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
+  for (const d of diagnoseTools) {
+    server.registerTool(
+      d.name,
+      { title: d.title, description: d.description, inputSchema: d.inputSchema, annotations: diagnoseAnnotations },
+      async (args: Record<string, string>) => {
+        const res = await diagnose(d.kind, Object.values(args)[0], caller, config);
+        return text(res.value, res.isError);
+      },
     );
   }
 
