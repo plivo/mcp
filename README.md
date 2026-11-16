@@ -131,6 +131,20 @@ To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.var
 point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
 Basic auth is for local development only; production accepts `stk_` tokens alone.
 
+## Deploy
+
+A merge to `main` deploys the Worker: `.github/workflows/deploy.yml` runs the type check and the tests, then
+`wrangler deploy`. Pull requests run the same checks without deploying (`ci.yml`).
+
+The deploy needs two settings on the repository:
+
+- `CLOUDFLARE_API_TOKEN`, a secret in the `production` environment: a Cloudflare token with Workers Scripts: Edit
+  on the account that owns the Worker. Limit the environment to `main`.
+- `CF_ACCOUNT_ID`, a repository variable: that account's id.
+
+The Worker's own secrets are set once in Cloudflare with `wrangler secret put` and outlive deploys. To roll back,
+pick the previous version in the Cloudflare dashboard, or run `npx wrangler rollback`.
+
 ## Not built yet
 
 - Client ID Metadata Documents (URL client ids); clients register with dynamic client registration instead
