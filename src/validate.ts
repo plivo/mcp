@@ -1,5 +1,5 @@
 import type { Operation } from "./catalog";
-import type { CallArgs } from "./upstream";
+import { HIDDEN, pairName, secretNamed, type CallArgs } from "./upstream";
 
 // One approval must not reach a crowd: Plivo takes up to 1,000 destinations in one `to`.
 export const MAX_DESTINATIONS = 10;
@@ -81,6 +81,27 @@ function list(v: unknown): string[] | undefined {
   return undefined;
 }
 
+/** The secret-named field under which a write carries the marker this server puts in replies, which is no credential. */
+function hiddenMarkerUnder(v: unknown, under?: string, depth = 0): string | undefined {
+  if (depth > 50) return undefined;
+  if (typeof v === "string") {
+    if (under !== undefined && v.toLowerCase().includes(HIDDEN)) return under;
+    if (!/^\s*[[{]/u.test(v)) return undefined;
+    try {
+      return hiddenMarkerUnder(JSON.parse(v), under, depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  if (v === null || typeof v !== "object") return undefined;
+  if (Array.isArray(v)) return v.map((x) => hiddenMarkerUnder(x, under, depth + 1)).find(Boolean);
+  const fields = Object.entries(v);
+  const name = pairName(fields);
+  return fields
+    .map(([k, x]) => hiddenMarkerUnder(x, under ?? (secretNamed(k) ? k : /^value$/iu.test(k) ? name : undefined), depth + 1))
+    .find(Boolean);
+}
+
 const split = (values: string[], sep: string) => values.flatMap((v) => v.split(sep).map((s) => s.trim()));
 
 /**
@@ -91,6 +112,9 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
   const params = args.params ?? {};
   const number = args.path_params?.number;
   if (number !== undefined && !E164.test(String(number))) return `number must be ${LOOKS.number[1]}; got ${JSON.stringify(number)}`;
+
+  const marked = hiddenMarkerUnder(params);
+  if (marked) return `${marked} holds "${HIDDEN}", which this server put in place of the real value in a reply; supply the real value, or leave the field out`;
 
   // Plivo would split the destinations on it, and the count below on "<" would be wrong.
   if (CAPPED[op.id] && params.delimiter != null) return 'delimiter is not accepted through this server; separate destinations with "<"';
