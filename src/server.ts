@@ -175,9 +175,6 @@ async function approvalAccount(
   return { id, lines };
 }
 
-/** Tools answered from the bundled catalog and docs: a call to one never reaches the auth proxy. */
-export const LOCAL_TOOLS = new Set(["plivo_api_search", "plivo_api_details", "search_docs"]);
-
 export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpServer {
   const server = new McpServer(
     { name: "plivo", version: "0.1.0" },
