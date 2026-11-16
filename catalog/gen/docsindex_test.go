@@ -30,6 +30,17 @@ func TestChunkDocsSplitsPagesAndHeadingsButNotCode(t *testing.T) {
 		"Source: https://plivo.com/docs/voice/xml/play",
 		"## Usage",
 		"Plays a file.",
+		"# IVR",
+		"Source: https://plivo.com/docs/voice/use-cases/ivr",
+		"> [tab] Node",
+		">",
+		"> ## Overview",
+		"> Menus.",
+		">",
+		"> > [tab] Using XML",
+		"> >",
+		"> > ## How it works",
+		"> > Press 1.",
 	}, "\n")
 
 	got := ChunkDocs(src)
@@ -40,6 +51,8 @@ func TestChunkDocsSplitsPagesAndHeadingsButNotCode(t *testing.T) {
 		{Title: "Speak", Section: "Basic Usage › Attributes", URL: "https://plivo.com/docs/voice/xml/speak",
 			Text: "voice and language.\n# Not a page\nno Source line follows, so this is text"},
 		{Title: "Play", Section: "Usage", URL: "https://plivo.com/docs/voice/xml/play", Text: "Plays a file."},
+		{Title: "IVR", Section: "Overview", URL: "https://plivo.com/docs/voice/use-cases/ivr", Text: "Menus."},
+		{Title: "IVR", Section: "How it works", URL: "https://plivo.com/docs/voice/use-cases/ivr", Text: "Press 1."},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %#v\nwant %#v", got, want)

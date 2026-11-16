@@ -103,7 +103,8 @@ export function buildRequest(op: Operation, args: CallArgs, cred: Credential, ba
   return {
     url: base.replace(/\/+$/, "") + path + (qs ? `?${qs}` : ""),
     method: op.method,
-    body: hasBody ? JSON.stringify(body) : undefined,
+    // Plivo refuses a bodiless write as not JSON, and the auth proxy forwards no Content-Type without a body.
+    body: hasBody ? JSON.stringify(body) : op.method === "GET" || op.method === "DELETE" ? undefined : "{}",
     warnings,
   };
 }
@@ -114,12 +115,14 @@ export interface UpstreamResult {
   body: unknown;
   /** The auth proxy refused the caller's token itself (not a 401 from Plivo behind it). */
   tokenRejected?: boolean;
+  /** The auth proxy refused the call because the token was minted without the module it needs. */
+  scopeMissing?: boolean;
 }
 
 const TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 1_000_000;
 
-export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImpl: typeof fetch = fetch): Promise<UpstreamResult> {
+export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImpl: typeof fetch = fetch, timeoutMs = TIMEOUT_MS): Promise<UpstreamResult> {
   const headers: Record<string, string> = {
     Authorization: cred.authorization,
     Accept: "application/json",
@@ -132,7 +135,7 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     headers,
     body: req.body,
     redirect: "manual",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status >= 300 && res.status < 400) {
     await res.body?.cancel();
@@ -148,7 +151,9 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   // The proxy marks its own token refusals; Plivo's 401 for the account behind a valid token must not
   // send the client into a sign-in loop.
   const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
-  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}) };
+  // The proxy names the missing module under errors.required_module; Plivo's own 403s use `error` and never carry it.
+  const scopeMissing = res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
+  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
 }
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */

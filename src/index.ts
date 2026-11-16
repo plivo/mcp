@@ -6,15 +6,21 @@ import {
   originValidationResponse,
 } from "@modelcontextprotocol/server";
 import { createConfirmer } from "./confirm";
-import { handleOAuth, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
-import { buildServer, type ServerConfig } from "./server";
+import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
+import { buildServer, LOCAL_TOOLS, type ServerConfig } from "./server";
+import { createTokenCheck } from "./tokencheck";
 import { parseCredential, readCapped } from "./upstream";
 
 export interface Env {
   /** The auth proxy's /v1/proxy base in production; https://api.plivo.com for local development. */
   PLIVO_API_BASE: string;
-  /** Comma-separated hostnames this Worker answers on, e.g. "mcp.plivo.com". Localhost is always allowed. */
+  /** Comma-separated Host header values this Worker accepts, e.g. its workers.dev name. Localhost is always allowed. */
   ALLOWED_HOSTS?: string;
+  /**
+   * The origin clients reach this Worker at, e.g. "https://mcp.plivo.com", when a proxy in front of it forwards the
+   * Worker's own Host. Sign-in metadata, the issuer and 401 challenges use it; it defaults to the request's origin.
+   */
+  PUBLIC_ORIGIN?: string;
   /** "true" accepts Basic auth_id:auth_token; local development only, never in production. */
   ALLOW_BASIC_AUTH?: string;
   /**
@@ -58,9 +64,9 @@ export function apiBaseError(base: string | undefined, name = "PLIVO_API_BASE"):
   return undefined;
 }
 
-function unauthorized(reason: string, challenge: string, error = "unauthorized"): Response {
+function unauthorized(reason: string, challenge: string, error = "unauthorized", status = 401): Response {
   return new Response(JSON.stringify({ error, error_description: reason }), {
-    status: 401,
+    status,
     headers: { "Content-Type": "application/json", "WWW-Authenticate": challenge },
   });
 }
@@ -68,15 +74,28 @@ function unauthorized(reason: string, challenge: string, error = "unauthorized")
 // The SDK answers 413 past this itself; peeking at a body first must not buffer more than it would.
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
-/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
-async function callsTool(request: Request): Promise<boolean> {
+interface RpcMessage {
+  method?: unknown;
+  params?: { name?: unknown };
+}
+
+/** The messages of a JSON-RPC body (one or a batch); none when it is not JSON. */
+async function rpcMessages(request: Request): Promise<(RpcMessage | null)[]> {
   const text = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
   try {
     const body: unknown = JSON.parse(text);
-    return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
+    return (Array.isArray(body) ? body : [body]) as (RpcMessage | null)[];
   } catch {
-    return false;
+    return [];
   }
+}
+
+function publicOriginError(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const why = apiBaseError(value, "PUBLIC_ORIGIN");
+  if (why) return why;
+  const u = new URL(value);
+  return u.pathname !== "/" || u.search || u.hash ? "PUBLIC_ORIGIN must be an origin like https://mcp.plivo.com, with no path" : undefined;
 }
 
 function misconfigured(reason: string): Response {
@@ -84,10 +103,29 @@ function misconfigured(reason: string): Response {
   return new Response("Server misconfigured\n", { status: 500 });
 }
 
+// Nothing the Worker serves is meant to be framed, sniffed or loaded by a page.
+const SECURITY_HEADERS: Record<string, string> = {
+  "Strict-Transport-Security": "max-age=31536000",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+};
+
+function withSecurityHeaders(res: Response): Response {
+  const out = new Response(res.body, res);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
+  return out;
+}
+
 export function createWorker(fetchImpl?: typeof fetch) {
-  return {
+  const tokenAccepted = createTokenCheck(fetchImpl);
+  const worker = {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
+      const originError = publicOriginError(env.PUBLIC_ORIGIN);
+      if (originError) return misconfigured(originError);
+      const publicOrigin = env.PUBLIC_ORIGIN ? new URL(env.PUBLIC_ORIGIN).origin : url.origin;
       if (OAUTH_PATHS.has(url.pathname) && env.PLIVO_LOGIN_BASE) {
         const badHost = hostHeaderValidationResponse(request, hostnames(env));
         if (badHost) return badHost;
@@ -100,6 +138,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
           secret: env.OAUTH_SECRET!,
           loginBase: new URL(env.PLIVO_LOGIN_BASE).origin,
           clientSecret: env.MCP_CLIENT_SECRET!,
+          publicOrigin,
           fetchImpl,
         });
       }
@@ -125,12 +164,13 @@ export function createWorker(fetchImpl?: typeof fetch) {
 
       const challenge = (invalidToken = false) =>
         env.PLIVO_LOGIN_BASE
-          ? resourceMetadataChallenge(url.origin, invalidToken)
+          ? resourceMetadataChallenge(publicOrigin, invalidToken)
           : `Bearer realm="plivo"${invalidToken ? ', error="invalid_token"' : ""}`;
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
       if ("error" in cred) return unauthorized(cred.error, challenge());
 
       let tokenRejected = false;
+      let scopeMissing = false;
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
@@ -139,19 +179,34 @@ export function createWorker(fetchImpl?: typeof fetch) {
         onTokenRejected: () => {
           tokenRejected = true;
         },
+        onScopeMissing: () => {
+          scopeMissing = true;
+        },
       };
-      const toolCall = request.method === "POST" && (await callsTool(request));
+      const messages = request.method === "POST" ? await rpcMessages(request) : [];
+      const toolCall = messages.some((m) => m?.method === "tools/call");
+      const tokenRefused = () => unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      // The auth proxy checks a call to one of its tools itself. Anything else would answer a made-up token.
+      const proxyChecks = messages.length > 0 && messages.every((m) => m?.method === "tools/call" && !LOCAL_TOOLS.has(m.params?.name as string));
+      if (env.PLIVO_LOGIN_BASE && !proxyChecks && !(await tokenAccepted(cred, env.PLIVO_API_BASE))) return tokenRefused();
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;
       // A streamed reply may still be running the tool, so whether Plivo refused the token is known only once it is read.
       const body = await res.arrayBuffer();
-      if (tokenRejected) {
-        return unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      if (tokenRejected) return tokenRefused();
+      if (scopeMissing && env.PLIVO_LOGIN_BASE) {
+        return unauthorized(
+          "This connection was approved before this tool's permission existed. Approve the Plivo connection again to use it.",
+          insufficientScopeChallenge(publicOrigin),
+          "insufficient_scope",
+          403,
+        );
       }
       return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },
   };
+  return { fetch: async (request: Request, env: Env) => withSecurityHeaders(await worker.fetch(request, env)) };
 }
 
 export default createWorker();

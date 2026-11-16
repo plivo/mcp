@@ -134,6 +134,47 @@ func TestBuildRejectsUnreviewedInput(t *testing.T) {
 	}
 }
 
+func TestExtraOps(t *testing.T) {
+	agentDelete := ExtraOp{Method: "DELETE", Path: "/AgentFlow/{agent_id}/", Title: "Delete an Agent", Group: "agents", Source: "agent.go:runAgentDelete",
+		Params: []Param{{Name: "agent_id", In: "path", Type: "string", Description: "The agent's UUID."}}}
+	ov := &Overrides{ExtraOps: []ExtraOp{agentDelete}}
+
+	cat, _, err := Build(nil, nil, inventory("DELETE /AgentFlow/{}/"), ov, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := cat.Operations[0]
+	if op.ID != "DELETE /AgentFlow/{agent_id}/" || op.Module != "agent.write" || !op.Destructive || op.Group != "agents" ||
+		len(op.PathParams) != 1 || op.PathParams[0].Description != "The agent's UUID." {
+		t.Errorf("an extra op must follow the docs-op rules: %+v", op)
+	}
+
+	if _, _, err := Build([]DocOp{docOp("DELETE", "/AgentFlow/{agent_id}/")}, nil, inventory("DELETE /AgentFlow/{}/"), ov, nil); err == nil ||
+		!strings.Contains(err.Error(), "now in the docs") {
+		t.Errorf("an extra op the docs now describe must stop the build, got %v", err)
+	}
+	if _, _, err := Build(nil, nil, inventory(), ov, nil); err == nil || !strings.Contains(err.Error(), "would be excluded") {
+		t.Errorf("an extra op the CLI does not call must stop the build, got %v", err)
+	}
+}
+
+func TestDestructiveOverride(t *testing.T) {
+	no := false
+	ov := &Overrides{Ops: map[string]OpOverride{"DELETE /Call/{call_uuid}/Play/": {Destructive: &no, Reason: "stops audio"}}}
+	ops := []DocOp{docOp("DELETE", "/Call/{call_uuid}/Play/"), docOp("DELETE", "/Call/{call_uuid}/")}
+	cat, _, err := Build(ops, nil, inventory("DELETE /Call/{}/Play/", "DELETE /Call/{}/"), ov, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, o := range cat.Operations {
+		got[o.ID] = o.Destructive
+	}
+	if got["DELETE /Call/{call_uuid}/Play/"] || !got["DELETE /Call/{call_uuid}/"] {
+		t.Errorf("only the overridden DELETE stops being permanent: %v", got)
+	}
+}
+
 func TestUnconfirmedPricingIsFlagged(t *testing.T) {
 	cat, rv, err := Build([]DocOp{docOp("POST", "/Call/{call_uuid}/Speak/")}, nil, inventory("POST /Call/{}/Speak/"), &Overrides{}, nil)
 	if err != nil {

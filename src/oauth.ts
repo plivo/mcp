@@ -7,6 +7,8 @@ export interface OAuthConfig {
   loginBase: string;
   /** Proves to the auth proxy that this server, and no one else, is redeeming an MCP login code. */
   clientSecret: string;
+  /** Where clients reach this server; it names itself with this in metadata, the issuer and the login cookie. */
+  publicOrigin: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -182,6 +184,14 @@ function loginCookie(origin: URL, value: string, maxAge: number): string {
   return `${loginCookieName(origin)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
+/**
+ * The challenge for a token minted before the module a tool needs existed: MCP clients sign in again and retry the
+ * call. No scope is named, because a sign-in grants every module the MCP has, whatever is asked for.
+ */
+export function insufficientScopeChallenge(origin: string): string {
+  return `Bearer error="insufficient_scope", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
+}
+
 /** The WWW-Authenticate value that tells an MCP client where to start OAuth; error="invalid_token" for a token that stopped working. */
 export function resourceMetadataChallenge(origin: string, invalidToken = false): string {
   return `Bearer ${invalidToken ? 'error="invalid_token", ' : ""}resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
@@ -328,8 +338,8 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
 }
 
 export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<Response> {
-  const origin = new URL(request.url);
-  const path = origin.pathname;
+  const origin = new URL(cfg.publicOrigin);
+  const path = new URL(request.url).pathname;
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...CORS, "Access-Control-Allow-Methods": "GET, POST" } });
 
   if (request.method === "GET" && path.startsWith("/.well-known/oauth-protected-resource")) {

@@ -248,3 +248,39 @@ describe("consent screen label", () => {
     expect(label.endsWith("N…)")).toBe(true);
   });
 });
+
+describe("behind a proxy that forwards the Worker's own host", () => {
+  const PUBLIC = "https://mcp.example.com";
+
+  it("names itself by PUBLIC_ORIGIN everywhere a client looks", async () => {
+    const t = setup({ PUBLIC_ORIGIN: PUBLIC });
+    const unauth = await t.send("/mcp", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    expect(unauth.headers.get("WWW-Authenticate")).toBe(`Bearer resource_metadata="${PUBLIC}/.well-known/oauth-protected-resource/mcp"`);
+    expect(await (await t.send("/.well-known/oauth-protected-resource/mcp")).json()).toMatchObject({ resource: `${PUBLIC}/mcp`, authorization_servers: [PUBLIC] });
+    expect(await (await t.send("/.well-known/oauth-authorization-server")).json()).toMatchObject({
+      issuer: PUBLIC,
+      authorization_endpoint: `${PUBLIC}/authorize`,
+      token_endpoint: `${PUBLIC}/token`,
+      registration_endpoint: `${PUBLIC}/register`,
+    });
+
+    const clientId = await registerClient(t.send);
+    const challenge = await s256("v".repeat(43));
+    const authorize = (resource: string) =>
+      t.send(`/authorize?${new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: CLIENT_CB, state: "s1", code_challenge: challenge, code_challenge_method: "S256", resource })}`);
+    expect(location(await authorize(`${ORIGIN}/mcp`)).searchParams.get("error")).toBe("invalid_target");
+    const auth = await authorize(`${PUBLIC}/mcp`);
+    expect(`${location(auth).origin}${location(auth).pathname}`).toBe(`${LOGIN}/v1/accounts/cli/authorize`);
+    expect(auth.headers.get("Set-Cookie")).toMatch(/^__Host-plivo_mcp_login=[^;]+; .*; Secure$/);
+
+    const loginState = location(auth).searchParams.get("state")!;
+    t.codes.set("login-code-1", { state: loginState, challenge: location(auth).searchParams.get("code_challenge")! });
+    const back = await t.send(`/oauth/callback?state=${loginState}&code=login-code-1`, { headers: { Cookie: cookieOf(auth) } });
+    expect(location(back).searchParams.get("iss")).toBe(PUBLIC);
+  });
+
+  it.each(["https://mcp.example.com/mcp", "http://mcp.example.com", "not a url"])("refuses to run with PUBLIC_ORIGIN %s", async (value) => {
+    expect((await setup({ PUBLIC_ORIGIN: value }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
+    expect((await setup({ PUBLIC_ORIGIN: value }).send("/mcp", { method: "POST", body: "{}" })).status).toBe(500);
+  });
+});

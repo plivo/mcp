@@ -52,6 +52,14 @@ func TestParseDocsLayouts(t *testing.T) {
 			title: "Send a Message", desc: "Send an SMS.",
 		},
 		{
+			name: "tabbed operations under one section",
+			src: page("## Play Audio\n\n> [tab] Start Playing\n>\n> Play an audio file.\n>\n> ```text\n> POST https://api.plivo.com/v1/Account/{auth_id}/Call/{call_uuid}/Play/\n> ```\n>\n" +
+				"> ### Arguments\n>\n> **urls** `string` *required*\n>\n> Audio URLs.\n\n> [tab] Stop Playing\n>\n> Stop the audio.\n>\n> ```text\n> DELETE https://api.plivo.com/v1/Account/{auth_id}/Call/{call_uuid}/Play/\n> ```\n"),
+			method: "POST", path: "/v1/Account/{auth_id}/Call/{call_uuid}/Play/",
+			want:  "urls:body:string!",
+			title: "Start Playing", desc: "Play an audio file.",
+		},
+		{
 			name: "inline endpoint with request-parameters section",
 			src: page("## List UCC Complaints\n\nFetch complaints.\n\n### HTTP Request\n\n`GET https://api.plivo.com/v1/Account/{auth_id}/Ucc/`\n\n" +
 				"### Request Parameters\n\n**status** `string`\n\nFilter.\n\n**limit** `integer` (default: 20)\n\nPage size.\n"),

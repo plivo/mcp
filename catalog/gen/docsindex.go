@@ -68,7 +68,7 @@ func ChunkDocs(src string) []DocChunk {
 		}
 	}
 
-	lines := strings.Split(scrubSamples(src), "\n")
+	lines := strings.Split(scrubSamples(unwrapTabs(src)), "\n")
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if strings.HasPrefix(l, "# ") && i+1 < len(lines) && pageSourceRe.MatchString(lines[i+1]) {
