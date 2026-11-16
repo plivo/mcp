@@ -9,7 +9,7 @@ import { proxyApprovals } from "./approvals";
 import { createConfirmer } from "./confirm";
 import { landingPage, landingPolicy, wantsLandingPage } from "./landing";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
-import { buildServer, LOCAL_TOOLS, type ServerConfig } from "./server";
+import { buildServer, type ServerConfig } from "./server";
 import { createTokenCheck } from "./tokencheck";
 import { parseCredential, readCapped } from "./upstream";
 
@@ -238,9 +238,8 @@ export function createWorker(plainFetch?: typeof fetch) {
       const messages = request.method === "POST" ? await rpcMessages(request) : [];
       const toolCall = messages.some((m) => m?.method === "tools/call");
       const tokenRefused = () => unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
-      // The auth proxy checks a call to one of its tools itself. Anything else would answer a made-up token.
-      const proxyChecks = messages.length > 0 && messages.every((m) => m?.method === "tools/call" && !LOCAL_TOOLS.has(m.params?.name as string));
-      if (env.PLIVO_LOGIN_BASE && !proxyChecks && !(await tokenAccepted(cred, env.PLIVO_API_BASE, fetchImpl))) return tokenRefused();
+      // Tool calls included: one that fails validation or stops for approval never reaches the auth proxy.
+      if (env.PLIVO_LOGIN_BASE && !(await tokenAccepted(cred, env.PLIVO_API_BASE, fetchImpl))) return tokenRefused();
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;
