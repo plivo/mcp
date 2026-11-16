@@ -5,6 +5,7 @@ import { createWorker, type Env } from "../src/index";
 import { buildShortcuts, SHORTCUT_DEFS } from "../src/shortcuts";
 import { diagnoseTools } from "../src/diagnose";
 import { getOperation } from "../src/catalog";
+import { inputError } from "../src/validate";
 import { proxyApprovals } from "../src/approvals";
 import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
 import { buildRequest } from "../src/upstream";
@@ -696,6 +697,46 @@ describe("search_docs", () => {
   it("gives the auth proxy exactly the catalog's routes", () => {
     const routes = new Map(catalogData.operations.map((o) => [`${o.method} ${o.path}`, o.module]));
     expect(new Map(proxyRoutes.map((r) => [`${r.method} ${r.path}`, r.module]))).toEqual(routes);
+  });
+});
+
+describe("destination lists and URL values of any JSON type", () => {
+  const check = (id: string, params: Record<string, unknown>) => inputError(getOperation(id)!, { params });
+  const numbers = Array.from({ length: 11 }, (_, i) => 14155551000 + i);
+  const strings = numbers.map(String);
+  const MPC = "POST /MultiPartyCall/name_{mpc_name}/Participant/";
+
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ["11 message destinations as JSON numbers", "POST /Message/", { dst: numbers }, "dst has 11 destinations"],
+    ["11 call destinations as JSON numbers", "POST /Call/", { to: numbers }, "to has 11 destinations"],
+    ["a bad number among JSON numbers", "POST /Message/", { dst: [14155551000, 12] }, 'dst must be a phone number in E.164 format, e.g. 14155550100; got "12"'],
+    ["destinations nested in a list", "POST /Message/", { dst: [strings] }, "dst must be a string or a list of strings"],
+    ["destinations inside an object", "POST /Call/", { to: { 0: strings.join("<") } }, "to must be a string or a list of strings"],
+    ["a list item that itself joins numbers", "POST /Message/", { dst: [strings.join("<")] }, "dst must be a phone number"],
+    ["11 multiparty call participants in a string", MPC, { to: strings.join("<") }, "to has 11 destinations"],
+    ["11 multiparty call participants in a list", MPC, { to: strings }, "to has 11 destinations"],
+    ["a URL nested in a list", "POST /Call/", { answer_url: [["https://169.254.169.254/"]] }, "answer_url must be a URL or a list of URLs"],
+    ["a URL inside an object", "POST /Message/", { media_urls: { a: "https://localhost/x" } }, "media_urls must be a URL or a list of URLs"],
+    ["a URL that is not text", "POST /Call/", { answer_url: true }, "answer_url must be a URL or a list of URLs"],
+    ["an internal URL after a comma in a URL list", "POST /Call/{call_uuid}/Play/", { urls: "https://example.com/a.mp3,https://localhost/b.mp3" }, "urls must point at a public host"],
+    ["an internal URL after a comma in opt-in images", "POST /TollfreeVerification/", { optin_image_url: "https://example.com/a.png, https://10.0.0.1/b.png" }, "optin_image_url must point at a public host"],
+  ])("refuses %s", (_, id, params, why) => {
+    expect(check(id, params)).toContain(why);
+  });
+
+  it.each<[string, string, Record<string, unknown>]>([
+    ["a comma in a single URL's query", "POST /Call/", { answer_url: "https://example.com/answer?ids=1,2" }],
+    ["a comma in a URL given as a list item", "POST /Message/", { media_urls: ["https://example.com/a.png?size=1,2"] }],
+    ["one destination as a JSON number", "POST /Message/", { dst: 14155551000 }],
+    ["10 multiparty call participants", MPC, { to: strings.slice(1) }],
+    ["values cleared with null", "POST /Call/", { to: null, hangup_url: null }],
+  ])("accepts %s", (_, id, params) => {
+    expect(check(id, params)).toBeUndefined();
+  });
+
+  it("asks for approval of a call whose answer URL has a comma", async () => {
+    const args = { from: "14155550100", to: "14155550101", answer_url: "https://example.com/answer?ids=1,2" };
+    expect((await call(await connect(setup().toWorker), "make_call", args)).parsed).toMatchObject({ status: "confirmation_required" });
   });
 });
 

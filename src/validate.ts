@@ -25,9 +25,15 @@ const NUMBER_PARAMS: Readonly<Record<string, Record<string, Kind>>> = {
   "POST /TollfreeVerification/": { number: "number" },
   "POST /10dlc/Campaign/{campaign_id}/Number/": { numbers: "number" },
 };
-const CAPPED: Readonly<Record<string, string>> = { "POST /Message/": "dst", "POST /Call/": "to" };
+const CAPPED: Readonly<Record<string, string>> = {
+  "POST /Message/": "dst",
+  "POST /Call/": "to",
+  "POST /MultiPartyCall/name_{mpc_name}/Participant/": "to",
+};
 
 const URL_PARAM = /^(url|urls|media_urls|.+_urls?)$/;
+// Plivo documents urls, media_urls and optin_image_url as comma-separated; any other holds one URL, whose query may have a comma.
+const URL_LIST_PARAM = /^(.*urls|optin_image_url)$/;
 const SCHEME: Readonly<Record<string, string>> = { service_url: "wss:" };
 
 function privateV4(host: string): boolean {
@@ -65,9 +71,13 @@ function urlError(name: string, raw: string): string | undefined {
   return undefined;
 }
 
-function list(v: unknown, sep: string): string[] | undefined {
-  if (typeof v === "string") return v.split(sep).map((s) => s.trim());
-  if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v as string[];
+/** The values to check: empty for an absent one, undefined for a shape that could carry them past the checks. */
+function list(v: unknown, sep?: string): string[] | undefined {
+  if (v === undefined || v === null) return [];
+  if (typeof v === "string") return sep === undefined ? [v] : v.split(sep).map((s) => s.trim());
+  // Checked as its digits: a number could otherwise carry destinations past the format check and the cap.
+  if (typeof v === "number") return [String(v)];
+  if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) return v.map(String);
   return undefined;
 }
 
@@ -82,7 +92,7 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
 
   for (const [name, kind] of Object.entries(NUMBER_PARAMS[op.id] ?? {})) {
     const values = list(params[name], "<");
-    if (!values) continue;
+    if (!values) return `${name} must be a string or a list of strings`;
     const [patterns, what] = LOOKS[kind];
     const bad = values.find((v) => !patterns.some((re) => re.test(v)));
     if (bad !== undefined) return `${name} must be ${what}; got ${JSON.stringify(bad)}`;
@@ -96,7 +106,9 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
 
   for (const [name, v] of Object.entries(params)) {
     if (!URL_PARAM.test(name)) continue;
-    for (const raw of list(v, ",") ?? []) {
+    const urls = list(v, URL_LIST_PARAM.test(name) ? "," : undefined);
+    if (!urls) return `${name} must be a URL or a list of URLs`;
+    for (const raw of urls) {
       if (raw === "") continue;
       const err = urlError(name, raw);
       if (err) return `${err}; got ${JSON.stringify(raw)}`;
