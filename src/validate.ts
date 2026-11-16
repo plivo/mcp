@@ -25,9 +25,15 @@ const NUMBER_PARAMS: Readonly<Record<string, Record<string, Kind>>> = {
   "POST /TollfreeVerification/": { number: "number" },
   "POST /10dlc/Campaign/{campaign_id}/Number/": { numbers: "number" },
 };
-const CAPPED: Readonly<Record<string, string>> = { "POST /Message/": "dst", "POST /Call/": "to" };
+const CAPPED: Readonly<Record<string, string>> = {
+  "POST /Message/": "dst",
+  "POST /Call/": "to",
+  "POST /MultiPartyCall/name_{mpc_name}/Participant/": "to",
+};
 
 const URL_PARAM = /^(url|urls|media_urls|.+_urls?)$/;
+// Plivo documents urls, media_urls and optin_image_url as comma-separated; any other holds one URL, whose query may have a comma.
+const URL_LIST_PARAM = /^(.*urls|optin_image_url)$/;
 const SCHEME: Readonly<Record<string, string>> = { service_url: "wss:" };
 
 function privateV4(host: string): boolean {
@@ -65,11 +71,17 @@ function urlError(name: string, raw: string): string | undefined {
   return undefined;
 }
 
-function list(v: unknown, sep: string): string[] | undefined {
-  if (typeof v === "string") return v.split(sep).map((s) => s.trim());
-  if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v as string[];
+/** The values to check: empty for an absent one, undefined for a shape that could carry them past the checks. */
+function list(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return [];
+  if (typeof v === "string") return [v];
+  // Checked as its digits: a number could otherwise carry destinations past the format check and the cap.
+  if (typeof v === "number") return [String(v)];
+  if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) return v.map(String);
   return undefined;
 }
+
+const split = (values: string[], sep: string) => values.flatMap((v) => v.split(sep).map((s) => s.trim()));
 
 /**
  * Why a write is refused before the user is asked to approve it: a value that cannot be a phone number or a
@@ -80,9 +92,13 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
   const number = args.path_params?.number;
   if (number !== undefined && !E164.test(String(number))) return `number must be ${LOOKS.number[1]}; got ${JSON.stringify(number)}`;
 
+  // Plivo would split the destinations on it, and the count below on "<" would be wrong.
+  if (CAPPED[op.id] && params.delimiter != null) return 'delimiter is not accepted through this server; separate destinations with "<"';
+
   for (const [name, kind] of Object.entries(NUMBER_PARAMS[op.id] ?? {})) {
-    const values = list(params[name], "<");
-    if (!values) continue;
+    const given = list(params[name]);
+    if (!given) return `${name} must be a string or a list of strings`;
+    const values = Array.isArray(params[name]) ? given : split(given, "<");
     const [patterns, what] = LOOKS[kind];
     const bad = values.find((v) => !patterns.some((re) => re.test(v)));
     if (bad !== undefined) return `${name} must be ${what}; got ${JSON.stringify(bad)}`;
@@ -96,7 +112,9 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
 
   for (const [name, v] of Object.entries(params)) {
     if (!URL_PARAM.test(name)) continue;
-    for (const raw of list(v, ",") ?? []) {
+    const urls = list(v);
+    if (!urls) return `${name} must be a URL or a list of URLs`;
+    for (const raw of URL_LIST_PARAM.test(name) ? split(urls, ",") : urls) {
       if (raw === "") continue;
       const err = urlError(name, raw);
       if (err) return `${err}; got ${JSON.stringify(raw)}`;
