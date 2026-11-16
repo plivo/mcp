@@ -401,7 +401,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
       <ul>
         <li><strong>Check the app.</strong> The screen shows the address the access goes to, then the app's name. Choose <strong>Allow</strong> only if you started this.</li>
         <li><strong>Pick the organizations.</strong> If your user belongs to more than one, tick the ones this connection may use on the same screen. It starts on the organization you signed in to. To move to another one you ticked, ask your app to switch organization. It asks you first.</li>
-        <li><strong>Limit what it may do.</strong> The same screen says <strong>Full access</strong>. Open it to switch off anything this connection should not do, such as sending messages or buying numbers. If the app later tries one of those, it is told that permission was not given and nothing happens. To change the choice, reconnect the server and sign in again.</li>
+        <li><strong>Limit what it may do.</strong> The same screen has an <strong>Access</strong> field, set to <strong>Full access</strong>. Change it to <strong>Read-only</strong>, or to <strong>Custom</strong> to set each area, such as messages or phone numbers, to no access, read-only or read and write. If the app later tries something outside that, it is told the access was not given and nothing happens. To change the choice, reconnect the server and sign in again.</li>
         <li><strong>Access lasts 30 days.</strong> After that the app asks you to sign in again.</li>
         <li><strong>Your Auth Token stays with Plivo.</strong> The app gets its own limited access, shown in the console as <strong>Plivo MCP</strong>.</li>
       </ul>

@@ -24,7 +24,7 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
 | `diagnose_call` | Ask Plivo's support assistant what happened on a call, from traces the API does not expose |
 | `diagnose_message` | Ask Plivo's support assistant why a message failed or what its status means |
-| `list_organizations` | List the organizations the connection may use, which one is current, and what it was permitted at sign-in |
+| `list_organizations` | List the organizations the connection may use, which one is current, and the access it was given at sign-in |
 | `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
@@ -87,14 +87,15 @@ plain tool error; changing the list takes a new sign-in.
 
 ## Permissions
 
-On the sign-in screen the user can switch off some of the auth proxy's 17 permissions (its modules, such as
-`message.send` or `number.write`) for the whole connection. The proxy enforces the choice; the Worker only reports it
+On the sign-in screen the user can set Access to Read-only or Custom instead of Full access. Custom gives each of
+8 areas (Account, Phone numbers, Messages, ...) a level: No access, Read-only, or Read and write. The auth proxy stores
+the result as a subset of its 17 permissions (its modules, such as `message.send`) for the whole connection. The proxy enforces the choice; the Worker only reports it
 and keeps nothing about it.
 
 - A call the proxy refuses with `errors.error: "permission_not_granted"` is a plain tool error. It names the
-  permission in plain words (`src/permissions.ts`) and says to reconnect the server and switch it on. It is not a
+  area and the level the action needs (`src/permissions.ts`) and says to reconnect the server and set it. It is not a
   sign-in challenge. A 403 with `required_module` alone still is: that token predates the module.
-- `list_organizations` adds `permissions`: full access, or what is and is not allowed.
+- `list_organizations` adds `permissions`: full access, or each area's level.
 - Before asking the user to approve an action, the Worker reads the permissions from the organizations route,
   alongside the account read, and refuses at once if the action's permission is off. Only the question does this:
   plain reads, writes that need no approval and the call that carries the answer add no request. If the proxy
