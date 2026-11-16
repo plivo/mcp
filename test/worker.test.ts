@@ -5,6 +5,7 @@ import { createWorker, type Env } from "../src/index";
 import { buildShortcuts, SHORTCUT_DEFS } from "../src/shortcuts";
 import { diagnoseTools } from "../src/diagnose";
 import { getOperation } from "../src/catalog";
+import { notGranted } from "../src/permissions";
 import { inputError } from "../src/validate";
 import { proxyApprovals } from "../src/approvals";
 import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
@@ -918,6 +919,11 @@ describe("search_docs", () => {
   it("gives the auth proxy exactly the catalog's routes", () => {
     const routes = new Map(catalogData.operations.map((o) => [`${o.method} ${o.path}`, o.module]));
     expect(new Map(proxyRoutes.map((r) => [`${r.method} ${r.path}`, r.module]))).toEqual(routes);
+  });
+
+  it("has a plain name for every permission an operation needs, so a refusal before approval can name it", () => {
+    const nameless = [...new Set(catalogData.operations.map((o) => o.module))].filter((m) => !/was not given the "[^"]+" permission/.test(notGranted(m)));
+    expect(nameless).toEqual([]);
   });
 });
 
@@ -1931,6 +1937,12 @@ describe("diagnose", () => {
       { status: 200 },
       { status: 403, body: JSON.stringify({ errors: { error: "permission_not_granted", required_module: "call.read" } }) },
       { isError: true, text: 'was not given the "View calls, conferences and recordings" permission' },
+    ],
+    [
+      "a refusal whose permission is not a name, as any other refusal",
+      { status: 200 },
+      { status: 403, body: JSON.stringify({ errors: { error: "permission_not_granted", required_module: { limited: true } } }) },
+      { isError: true, parsed: { status: 403, response: { errors: { error: "permission_not_granted" } } } },
     ],
     ["the diagnose rate limit", { status: 200 }, { status: 429 }, { isError: true, text: "diagnose limit" }],
     [
