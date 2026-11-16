@@ -647,9 +647,10 @@ const LOGIN = "http://127.0.0.1:8798";
 
 /**
  * A Worker whose auth proxy also keeps the approvals. `consume` overrides the status it answers a spend with;
- * `links` gives it the approval-link routes, and `decide` plays the user on the console page.
+ * `links` gives it the approval-link routes, `decide` plays the user on the console page, and `answer`
+ * replaces what an approval-link route answers.
  */
-function setupWithProxy(consume?: () => number | Error, links = false) {
+function setupWithProxy(consume?: () => number | Error, links = false, answer?: (route: "create" | "redeem") => Response | undefined) {
   const sent: Sent[] = [];
   const spent = new Set<string>();
   const pending = new Map<string, { digest: string; action: string; status: string; auth: string | null }>();
@@ -666,11 +667,13 @@ function setupWithProxy(consume?: () => number | Error, links = false) {
       spent.add(body.id);
       return json(status);
     }
+    const forced = u === base ? answer?.("create") : u.endsWith("/redeem") ? answer?.("redeem") : undefined;
+    if (forced) return forced;
     if (u === base) {
       if (!links) return json(404);
       const id = `approval-${pending.size + 1}`;
       pending.set(id, { digest: body.digest, action: body.action, status: "pending", auth });
-      return json(201, { id, url: `https://console.test/mcp/approve?id=${id}` });
+      return json(201, { id, url: `https://console.test/mcp/approve?id=${id}`, expires_in_seconds: 120 });
     }
     if (u.startsWith(`${base}/`)) {
       const id = u.slice(base.length + 1).replace(/\/redeem$/, "");
@@ -753,7 +756,7 @@ describe("approval on a Plivo console page, for a client with no approval dialog
     const { toWorker, sent, pending, decide } = setupWithProxy(undefined, true);
     const client = await connect(toWorker);
     const asked = await ask(client);
-    expect(asked).toMatchObject({ status: "approval_required", approval_url: "https://console.test/mcp/approve?id=approval-1" });
+    expect(asked).toMatchObject({ status: "approval_required", approval_url: "https://console.test/mcp/approve?id=approval-1", expires_in_seconds: 120 });
     expect([...pending.values()][0].action).toBe(asked.action);
     expect(asked.action).toContain('dst: "+14155550101"');
 
@@ -801,8 +804,46 @@ describe("approval on a Plivo console page, for a client with no approval dialog
     expect(res.isError).toBe(true);
     expect(res.raw).toContain("could not be set up");
 
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const old = setupWithProxy();
     expect((await call(await connect(old.toWorker), "send_sms", SMS)).parsed).toMatchObject({ status: "confirmation_required" });
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("refuses an approval page that is not a web address", async () => {
+    const page = () => new Response(JSON.stringify({ data: { id: "approval-1", url: "javascript:alert(1)" } }), { status: 201 });
+    const { toWorker } = setupWithProxy(undefined, true, (route) => (route === "create" ? page() : undefined));
+    const res = await call(await connect(toWorker), "send_sms", SMS);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("could not be set up");
+  });
+
+  it("does not take a state signed for the client's own dialog as a confirmation code", async () => {
+    const { toWorker, sent } = setupWithProxy(undefined, true);
+    const { client: dialog } = await connectWithDialog(toWorker, { action: "decline" }, { manual: true });
+    const { requestState } = (await dialog.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    const res = await call(await connect(toWorker), "send_sms", { ...SMS, confirmation_code: requestState });
+    expect(res.isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("sends the client to sign in again when the auth proxy refuses the token on the check", async () => {
+    let status = 0;
+    const { toWorker, sent } = setupWithProxy(undefined, true, (route) => (route === "redeem" && status ? new Response("{}", { status }) : undefined));
+    let last: Response | undefined;
+    const client = await connect(async (input, init) => (last = (await toWorker(input, init)).clone()));
+    const asked = await ask(client);
+
+    status = 400;
+    const invalid = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.raw).not.toContain("shortly");
+
+    status = 401;
+    await expect(client.callTool({ name: "send_sms", arguments: { ...SMS, confirmation_code: asked.confirmation_code } })).rejects.toThrow();
+    expect(last!.status).toBe(401);
+    expect(writes(sent)).toHaveLength(0);
   });
 
   it("still asks in the client's own dialog when it has one", async () => {

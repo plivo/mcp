@@ -9,9 +9,12 @@ export interface Approvals {
    */
   consume(id: string, authorization: string): Promise<"ok" | "used" | "absent" | "failed">;
   /** Registers an action for the user to approve in the Plivo console, and returns the page to approve it on. */
-  create(digest: string, action: string, authorization: string): Promise<{ id: string; url: string } | "absent" | "failed">;
-  /** The user's decision. "approved" is given once; "gone" is an approval that expired or was already redeemed. */
-  redeem(id: string, digest: string, authorization: string): Promise<"approved" | "pending" | "denied" | "gone" | "failed">;
+  create(digest: string, action: string, authorization: string): Promise<{ id: string; url: string; expiresInSeconds?: number } | "absent" | "failed">;
+  /**
+   * The user's decision. "approved" is given once; "gone" is an approval that expired or was already redeemed.
+   * "rejected" is a token the proxy no longer accepts, and "invalid" a check it will never accept.
+   */
+  redeem(id: string, digest: string, authorization: string): Promise<"approved" | "pending" | "denied" | "gone" | "rejected" | "invalid" | "failed">;
 }
 
 const TIMEOUT_MS = 10_000;
@@ -56,15 +59,17 @@ export function proxyApprovals(loginBase: string, fetchImpl: typeof fetch = fetc
         // 404 and 405 are a proxy that has no such route yet.
         return res.status === 404 || res.status === 405 ? "absent" : "failed";
       }
-      const { id, url } = await data(res);
-      return typeof id === "string" && typeof url === "string" && /^https?:\/\//.test(url) ? { id, url } : "failed";
+      const { id, url, expires_in_seconds: ttl } = await data(res);
+      if (typeof id !== "string" || typeof url !== "string" || !/^https?:\/\//.test(url)) return "failed";
+      return { id, url, ...(typeof ttl === "number" && ttl > 0 ? { expiresInSeconds: ttl } : {}) };
     },
     async redeem(id, digest, authorization) {
       const res = await post(`/${encodeURIComponent(id)}/redeem`, authorization, { digest });
       if (!res) return "failed";
-      if (res.status === 404) {
+      const refusal = ({ 404: "gone", 401: "rejected", 400: "invalid" } as const)[res.status];
+      if (refusal) {
         await res.body?.cancel();
-        return "gone";
+        return refusal;
       }
       const status = res.status === 200 ? (await data(res)).status : (await res.body?.cancel(), undefined);
       return status === "approved" || status === "pending" || status === "denied" ? status : "failed";

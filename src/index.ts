@@ -150,6 +150,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
       const mode = confirmationMode(env);
       const configError =
         apiBaseError(env.PLIVO_API_BASE) ??
+        (env.PLIVO_LOGIN_BASE ? apiBaseError(env.PLIVO_LOGIN_BASE, "PLIVO_LOGIN_BASE") : undefined) ??
         (mode === "confirm" && (env.CONFIRM_SECRET ?? "").length < 32 ? "CONFIRM_SECRET must be at least 32 characters" : undefined) ??
         (mode === "allow" && !LOCAL_HOSTS.has(new URL(env.PLIVO_API_BASE).hostname)
           ? "CONFIRMATION_MODE=allow is only for a fake upstream on this machine"
@@ -165,17 +166,22 @@ export function createWorker(fetchImpl?: typeof fetch) {
 
       let tokenRejected = false;
       let scopeMissing = false;
+      const onTokenRejected = () => {
+        tokenRejected = true;
+      };
       const config: ServerConfig = {
         apiBase: env.PLIVO_API_BASE,
         confirmationMode: mode,
         confirmer:
           mode === "confirm"
-            ? createConfirmer(env.CONFIRM_SECRET!, env.PLIVO_LOGIN_BASE ? proxyApprovals(env.PLIVO_LOGIN_BASE, fetchImpl) : undefined)
+            ? createConfirmer(
+                env.CONFIRM_SECRET!,
+                env.PLIVO_LOGIN_BASE ? proxyApprovals(new URL(env.PLIVO_LOGIN_BASE).origin, fetchImpl) : undefined,
+                onTokenRejected,
+              )
             : undefined,
         fetchImpl,
-        onTokenRejected: () => {
-          tokenRejected = true;
-        },
+        onTokenRejected,
         onScopeMissing: () => {
           scopeMissing = true;
         },

@@ -82,6 +82,8 @@ export interface Confirmer {
   code: RequestStateCodec<Pending>;
   /** Absent in local development, where there is no auth proxy to remember a spent approval. */
   approvals?: Approvals;
+  /** Told when the auth proxy refuses the caller's token, so the client is sent to sign in again. */
+  onTokenRejected?: () => void;
 }
 
 export const CODE_TTL_SECONDS = 300;
@@ -92,10 +94,10 @@ export const confirmationCodeField = z
   .optional()
   .describe("Only after a previous call returned approval_required or confirmation_required and the user approved that exact action.");
 
-export function createConfirmer(secret: string, approvals?: Approvals): Confirmer {
+export function createConfirmer(secret: string, approvals?: Approvals, onTokenRejected?: () => void): Confirmer {
   // Bound to the caller's credential: one account's approval cannot authorize another's request.
   const bind = (ctx: ServerContext) => ctx.http?.authInfo?.token ?? "";
-  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals };
+  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals, onTokenRejected };
 }
 
 /**
@@ -360,7 +362,10 @@ async function askByLink(c: Confirmer, ctx: ServerContext, d: string, action: st
   const authorization = ctx.http?.authInfo?.token ?? "";
   if (!c.approvals || !authorization.startsWith("Bearer ")) return undefined;
   const made = await c.approvals.create(d, action, authorization);
-  if (made === "absent") return undefined;
+  if (made === "absent") {
+    console.warn("plivo-mcp: the auth proxy has no approval-link route (404 or 405), so this approval falls back to a confirmation code");
+    return undefined;
+  }
   if (made === "failed") return { approved: false, result: textResult("The approval could not be set up, so nothing was done. Try again shortly.", true) };
   return {
     approved: false,
@@ -370,7 +375,7 @@ async function askByLink(c: Confirmer, ctx: ServerContext, d: string, action: st
       action,
       approval_url: made.url,
       confirmation_code: await c.code.mint({ d, k: "link", a: made.id, n: crypto.randomUUID() }, ctx),
-      expires_in_seconds: CODE_TTL_SECONDS,
+      expires_in_seconds: Math.min(CODE_TTL_SECONDS, made.expiresInSeconds ?? CODE_TTL_SECONDS),
       instructions: LINK_INSTRUCTIONS,
     }),
   };
@@ -381,10 +386,13 @@ async function redeemLink(c: Confirmer, ctx: ServerContext, p: Pending): Promise
   const authorization = ctx.http?.authInfo?.token ?? "";
   const outcome = c.approvals && p.a ? await c.approvals.redeem(p.a, p.d, authorization) : "failed";
   if (outcome === "approved") return { approved: true };
+  if (outcome === "rejected") c.onTokenRejected?.();
   const why = {
     pending: "The user has not approved this action yet. Nothing was done; ask them to open approval_url and approve it, then call again with the same confirmation_code.",
     denied: "Nothing was done: the user denied this action.",
     gone: "This approval expired or was already used. Nothing was done; call again without confirmation_code and ask the user again.",
+    rejected: "Plivo refused this token: it has expired or was revoked. Nothing was done; sign in again.",
+    invalid: "This approval cannot be checked. Nothing was done; call again without confirmation_code and ask the user again.",
     failed: "The approval could not be checked, so nothing was done. Try again shortly.",
   }[outcome];
   return { approved: false, result: textResult(why, true) };
@@ -417,8 +425,10 @@ export async function confirmGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.d !== d || p.k === "elicit") return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
-    return p.k === "link" ? redeemLink(c, ctx, p) : spend(c, ctx, code);
+    // Only the two kinds minted as a code are taken here: any other signed state proves no user said yes.
+    if (p.d === d && p.k === "link") return redeemLink(c, ctx, p);
+    if (p.d === d && p.k === undefined) return spend(c, ctx, code);
+    return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 
   const link = await askByLink(c, ctx, d, shown.action);
