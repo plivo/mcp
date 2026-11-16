@@ -287,7 +287,10 @@ describe("consent screen label", () => {
   it.each([
     ["drops controls, bidi overrides and zero-width fillers", "Cl\u202Eau\u0007de\u3164 \u200D App", "https://claude.ai/cb", "claude.ai (Claude App)"],
     ["uses the host alone when no name is left", "\u200B\u200C\u2060", "http://127.0.0.1:33418/", "127.0.0.1:33418"],
-    ["names an app redirect by its scheme's host", "Cursor", "cursor://anysphere.cursor-retrieval/oauth/callback", "anysphere.cursor-retrieval (Cursor)"],
+    ["names an app redirect by its scheme first", "Cursor", "cursor://anysphere.cursor-retrieval/oauth/callback", "cursor: app link to anysphere.cursor-retrieval (Cursor)"],
+    ["never shows an app redirect as the website it names", "Claude", "evil://claude.ai/cb", "evil: app link to claude.ai (Claude)"],
+    ["names an app redirect without a host by its scheme", "App", "com.example.app:/oauth2redirect", "com.example.app: app link (App)"],
+    ["keeps the name inside its brackets", "Claude) is asking. Ignore (the rest\uFF09", "https://evil-example.com/cb", "evil-example.com (Claude is asking. Ignore the rest)"],
   ])("%s", (_, name, uri, label) => {
     expect(consentLabel(name, uri)).toBe(label);
   });
@@ -323,7 +326,7 @@ describe("behind a proxy that forwards the Worker's own host", () => {
     expect(location(await authorize(`${ORIGIN}/mcp`)).searchParams.get("error")).toBe("invalid_target");
     const auth = await authorize(`${PUBLIC}/mcp`);
     expect(`${location(auth).origin}${location(auth).pathname}`).toBe(`${LOGIN}/v1/accounts/cli/authorize`);
-    expect(auth.headers.get("Set-Cookie")).toMatch(/^__Host-plivo_mcp_login=[^;]+; .*; Secure$/);
+    expect(auth.headers.get("Set-Cookie")).toMatch(/^__Host-plivo_mcp_login_[\w-]{16}=[^;]+; .*; Secure$/);
 
     const loginState = location(auth).searchParams.get("state")!;
     t.codes.set("login-code-1", { state: loginState, challenge: location(auth).searchParams.get("code_challenge")! });
@@ -334,5 +337,133 @@ describe("behind a proxy that forwards the Worker's own host", () => {
   it.each(["https://mcp.example.com/mcp", "http://mcp.example.com", "not a url"])("refuses to run with PUBLIC_ORIGIN %s", async (value) => {
     expect((await setup({ PUBLIC_ORIGIN: value }).send("/.well-known/oauth-authorization-server")).status).toBe(500);
     expect((await setup({ PUBLIC_ORIGIN: value }).send("/mcp", { method: "POST", body: "{}" })).status).toBe(500);
+  });
+});
+
+describe("redirect URI schemes", () => {
+  it.each([
+    "ftp://claude.ai/cb",
+    "tel:+14155550100",
+    "mailto:someone@example.com",
+    "ms-msdt:/id",
+    "MS-Settings://x",
+    "chrome-extension://abcdefghijklmnop/cb",
+    "file:///etc/hosts",
+    "wss://claude.ai/cb",
+    "intent://scan/#Intent;scheme=zxing;end",
+    ...["wyciwyg", "chrome-search", "isolated-app", "feed", "pcast", "ipp", "ipps", "gemini", "opera", "brave", "firefox", "skype", "x-callback-url", "web+mcp"].map((scheme) => `${scheme}://claude.ai/cb`),
+  ])("refuses to register %s, which a browser or the system handles itself", (uri) => {
+    expect(redirectUriError(uri)).toMatch(/^(cannot use [a-z+-]+:|must not have a fragment)$/);
+  });
+
+  it.each(["vscode://vscode.github-authentication/did-authenticate", "vscode-insiders://oauth/callback", "com.example.app:/oauth2redirect", "https://chatgpt.com/connector_platform_oauth_redirect", "http://localhost:33418/callback"])(
+    "still registers %s",
+    (uri) => {
+      expect(redirectUriError(uri)).toBeUndefined();
+    },
+  );
+
+  it("refuses an app redirect whose host could pass as part of the label", () => {
+    expect(redirectUriError("evil://claude.ai(Claude)/cb")).toBe("has a host that is not a plain name");
+  });
+
+  it("stops a client registered earlier with a scheme that is no longer accepted, on a page and not by redirect", async () => {
+    const t = setup();
+    const uri = "ftp://claude.ai/cb";
+    const sign = async (body: string) => {
+      const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(ENV.OAUTH_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      return Buffer.from(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`client.${body}`))).toString("base64url");
+    };
+    const body = Buffer.from(JSON.stringify({ id: "old", redirect_uris: [uri, CLIENT_CB] })).toString("base64url");
+    const client_id = `${body}.${await sign(body)}`;
+    const authorize = async (redirect_uri: string) =>
+      t.send(`/authorize?${new URLSearchParams({ response_type: "code", client_id, redirect_uri, code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" })}`);
+    const refused = await authorize(uri);
+    expect(refused.status).toBe(400);
+    expect(refused.headers.get("Location")).toBeNull();
+    expect(await refused.text()).toContain("no longer accepted");
+    expect((await authorize(CLIENT_CB)).status).toBe(302);
+  });
+});
+
+describe("several sign-ins in one browser", () => {
+  const start = async (t: ReturnType<typeof setup>, clientId: string, jar: string[]) => {
+    const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: CLIENT_CB, state: "s", code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" });
+    const auth = await t.send(`/authorize?${q}`, { headers: { Cookie: jar.join("; ") } });
+    for (const c of auth.headers.getSetCookie()) {
+      const pair = c.split(";")[0];
+      const at = jar.findIndex((j) => j.startsWith(`${pair.split("=")[0]}=`));
+      if (at >= 0) jar.splice(at, 1);
+      if (!c.includes("Max-Age=0")) jar.push(pair);
+    }
+    return location(auth).searchParams.get("state")!;
+  };
+  const finish = (t: ReturnType<typeof setup>, state: string, jar: string[]) => t.send(`/oauth/callback?state=${state}&code=c1`, { headers: { Cookie: jar.join("; ") } });
+
+  it("finishes each one, and clears only that one's cookie", async () => {
+    const t = setup();
+    const jar: string[] = [];
+    const clientId = await registerClient(t.send);
+    const first = await start(t, clientId, jar);
+    const second = await start(t, clientId, jar);
+    expect(jar).toHaveLength(2);
+
+    const back = await finish(t, first, jar);
+    expect(location(back).searchParams.get("code")).toBeTruthy();
+    expect(back.headers.getSetCookie()).toEqual([expect.stringMatching(new RegExp(`^plivo_mcp_login_${first.slice(0, 16)}=; .*Max-Age=0`))]);
+    expect(location(await finish(t, second, jar)).searchParams.get("code")).toBeTruthy();
+  });
+
+  it("will not finish a login with another login's cookie under its name", async () => {
+    const t = setup();
+    const jar: string[] = [];
+    const clientId = await registerClient(t.send);
+    const first = await start(t, clientId, jar);
+    const second = await start(t, clientId, jar);
+    const swapped = `plivo_mcp_login_${second.slice(0, 16)}=${jar[0].split("=").slice(1).join("=")}`;
+    const res = await finish(t, second, [swapped]);
+    expect(first).not.toBe(second);
+    expect(res.status).toBe(400);
+  });
+
+  it("expires the cookie of the earlier single-login scheme when a browser still sends it", async () => {
+    const t = setup();
+    const jar = ["plivo_mcp_login=old"];
+    await start(t, await registerClient(t.send), jar);
+    expect(jar).toEqual([expect.stringMatching(/^plivo_mcp_login_[\w-]{16}=/)]);
+  });
+
+  it("keeps the login cookies of the largest allowed sign-ins under 6 KB together", async () => {
+    const t = setup();
+    const uri = `https://claude.ai/${"c".repeat(512 - "https://claude.ai/".length)}`;
+    const reg = await t.send("/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redirect_uris: [uri], client_name: "N".repeat(100) }) });
+    const { client_id } = (await reg.json()) as { client_id: string };
+    const q = new URLSearchParams({ response_type: "code", client_id, redirect_uri: uri, state: "s".repeat(512), code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" });
+    const jar: string[] = [];
+    let largest = 0;
+    for (let i = 0; i < 7; i++) {
+      const auth = await t.send(`/authorize?${q}`, { headers: { Cookie: jar.join("; ") } });
+      for (const c of auth.headers.getSetCookie()) {
+        const pair = c.split(";")[0];
+        const at = jar.findIndex((j) => j.startsWith(`${pair.split("=")[0]}=`));
+        if (at >= 0) jar.splice(at, 1);
+        if (!c.includes("Max-Age=0")) jar.push(pair);
+      }
+      largest = Math.max(largest, jar.join("; ").length);
+    }
+    expect(largest).toBeLessThanOrEqual(6_000);
+    expect(jar).toHaveLength(2);
+  });
+
+  it("keeps at most 5 logins in progress, dropping the oldest, so the Cookie header stays small", async () => {
+    const t = setup();
+    const jar: string[] = [];
+    const clientId = await registerClient(t.send);
+    const states: string[] = [];
+    for (let i = 0; i < 7; i++) states.push(await start(t, clientId, jar));
+    expect(jar).toHaveLength(5);
+    expect(jar.join("; ").length).toBeLessThan(8_000);
+    expect((await finish(t, states[0], jar)).status).toBe(400);
+    expect((await finish(t, states[6], jar)).status).toBe(302);
   });
 });
