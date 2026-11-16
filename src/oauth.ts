@@ -36,7 +36,22 @@ const MAX_LABEL_CHARS = 128;
 const MAX_SHOWN_HOST_CHARS = 100;
 const MAX_BODY_CHARS = 16_384;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
-const BLOCKED_SCHEMES = new Set(["javascript:", "data:", "vbscript:", "file:", "blob:", "about:"]);
+// Handled by the browser or the operating system itself, so a redirect to one starts that handler and reaches no MCP
+// app. The list cannot be complete, which is why the consent label always names an app scheme.
+const SYSTEM_SCHEMES = new Set(
+  (
+    "javascript data vbscript file blob about filesystem view-source ftp ftps sftp ws wss chrome chrome-extension chrome-untrusted " +
+    "devtools edge moz-extension safari-extension safari-web-extension resource jar res mhtml mk cid mid urn tag mailto tel sms smsto " +
+    "mms mmsto sip sips callto facetime facetime-audio facetime-group imessage xmpp irc ircs news nntp snews webcal geo maps ssh " +
+    "telnet ldap ldaps smb nfs afp vnc rdp git svn dav davs shell search-ms intent market android-app content itms itms-apps " +
+    "itms-appss itms-services itms-books prefs app-settings shortcuts applescript help x-man-page man magnet bitcoin gopher rtsp rtmp"
+  ).split(" "),
+);
+const SYSTEM_SCHEME_PREFIX = /^(ms-|x-apple|microsoft-edge)/;
+// An opaque host may hold brackets and other characters that would read as part of the consent label.
+const APP_HOST = /^[a-z0-9._-]*(:\d+)?$/i;
+// Typical login cookies are under 1 KB each; CloudFront refuses a request whose headers pass 20 KB.
+const MAX_LOGINS_IN_PROGRESS = 5;
 
 const enc = new TextEncoder();
 
@@ -127,10 +142,12 @@ function errorPage(message: string): Response {
   return new Response(`Plivo sign-in failed: ${message}\n`, { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-function redirectTo(target: string, params: Record<string, string | undefined>, headers: Record<string, string> = {}): Response {
+function redirectTo(target: string, params: Record<string, string | undefined>, cookies: string[] = []): Response {
   const url = new URL(target);
   for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, v);
-  return new Response(null, { status: 302, headers: { Location: url.toString(), "Cache-Control": "no-store", ...headers } });
+  const headers = new Headers({ Location: url.toString(), "Cache-Control": "no-store" });
+  for (const c of cookies) headers.append("Set-Cookie", c);
+  return new Response(null, { status: 302, headers });
 }
 
 export function redirectUriError(uri: unknown): string | undefined {
@@ -142,13 +159,25 @@ export function redirectUriError(uri: unknown): string | undefined {
     return "is not a URL";
   }
   if (url.hash) return "must not have a fragment";
-  if (BLOCKED_SCHEMES.has(url.protocol)) return `cannot use ${url.protocol}`;
-  if (url.protocol === "http:" && !LOOPBACK.has(url.hostname)) return "may use http only for a loopback address";
+  if (url.protocol === "http:") {
+    if (!LOOPBACK.has(url.hostname)) return "may use http only for a loopback address";
+  } else if (url.protocol !== "https:") {
+    const scheme = url.protocol.slice(0, -1);
+    if (SYSTEM_SCHEMES.has(scheme) || SYSTEM_SCHEME_PREFIX.test(scheme)) return `cannot use ${url.protocol}`;
+    if (!APP_HOST.test(url.host)) return "has a host that is not a plain name";
+  }
   if ([...shownHost(url)].length > MAX_SHOWN_HOST_CHARS) return `has a host longer than ${MAX_SHOWN_HOST_CHARS} characters`;
   return undefined;
 }
 
-const shownHost = (url: URL) => url.host || url.protocol;
+/**
+ * Where the token goes, as the consent screen shows it. An app scheme is always named, so `evil://claude.ai` cannot
+ * read as the website. Never as `scheme://host`: the firewall before the auth proxy blocks URLs in a query value.
+ */
+function shownHost(url: URL): string {
+  if (url.protocol === "https:" || url.protocol === "http:") return url.host;
+  return `${url.protocol} app link${url.host ? ` to ${url.host}` : ""}`;
+}
 
 /** A name someone else chose, without the invisible characters that could pad it or reorder what is shown. */
 export function cleanName(name: unknown): string {
@@ -163,28 +192,29 @@ export function cleanName(name: unknown): string {
  */
 export function consentLabel(clientName: string | undefined, redirectUri: string): string {
   const host = shownHost(new URL(redirectUri));
-  const name = [...cleanName(clientName)];
+  // Without brackets of its own, the name cannot close the pair it is shown in and pass as the text after it.
+  const name = [...cleanName(clientName?.replace(/[\p{Ps}\p{Pe}]/gu, ""))];
   if (name.length === 0) return host;
   const room = MAX_LABEL_CHARS - [...host].length - 3;
   return `${host} (${name.length <= room ? name.join("") : `${name.slice(0, room - 1).join("")}…`})`;
 }
 
-function loginCookieName(origin: URL) {
-  return origin.protocol === "https:" ? "__Host-plivo_mcp_login" : "plivo_mcp_login";
+// One cookie per login, so a second sign-in in the same browser does not replace the first.
+function loginCookieName(origin: URL, loginState: string) {
+  return `${origin.protocol === "https:" ? "__Host-" : ""}plivo_mcp_login_${loginState.slice(0, 16)}`;
 }
 
-function readCookie(request: Request, name: string): string | undefined {
-  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
+function cookies(request: Request): [string, string][] {
+  return (request.headers.get("Cookie") ?? "").split(";").map((part) => {
     const [k, ...v] = part.trim().split("=");
-    if (k === name) return v.join("=");
-  }
-  return undefined;
+    return [k, v.join("=")];
+  });
 }
 
 // Lax, so the cookie still arrives when the Console redirects the browser back here.
-function loginCookie(origin: URL, value: string, maxAge: number): string {
+function loginCookie(origin: URL, loginState: string, value: string, maxAge: number): string {
   const secure = origin.protocol === "https:" ? "; Secure" : "";
-  return `${loginCookieName(origin)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+  return `${loginCookieName(origin, loginState)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
 /**
@@ -243,6 +273,10 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
   const client = await unseal<Client>(cfg.secret, "client", clientId);
   if (!client) return errorPage("unknown client_id. Remove this server from your MCP client and add it again.");
   if (!client.redirect_uris.includes(redirectUri)) return errorPage("redirect_uri is not registered for this client.");
+  // A client id never expires, so one sealed under older rules is held to today's.
+  if (redirectUriError(redirectUri)) {
+    return errorPage("this app registered a redirect address that is no longer accepted. Remove this server from your MCP client and add it again.");
+  }
 
   const state = q.get("state") ?? undefined;
   const fail = (error: string, description: string) => redirectTo(redirectUri, { error, error_description: description, state });
@@ -269,18 +303,26 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
       code_challenge_method: "S256",
       device,
     },
-    { "Set-Cookie": loginCookie(origin, await seal(cfg.secret, "login", login), LOGIN_TTL_SECONDS) },
+    [loginCookie(origin, loginState, await seal(cfg.secret, "login", login), LOGIN_TTL_SECONDS), ...staleLogins(request, origin)],
   );
+}
+
+/** Expires all but the newest logins in progress; a browser sends its oldest cookies first. */
+function staleLogins(request: Request, origin: URL): string[] {
+  const prefix = loginCookieName(origin, "");
+  const names = cookies(request).map(([k]) => k).filter((k) => /^[\w-]+$/.test(k) && k.startsWith(prefix));
+  return names.slice(0, Math.max(0, names.length - (MAX_LOGINS_IN_PROGRESS - 1))).map((k) => loginCookie(origin, k.slice(prefix.length), "", 0));
 }
 
 async function callback(request: Request, origin: URL, cfg: OAuthConfig): Promise<Response> {
   const q = new URL(request.url).searchParams;
-  const login = await unseal<Login>(cfg.secret, "login", readCookie(request, loginCookieName(origin)));
+  const state = q.get("state") ?? "";
+  const login = await unseal<Login>(cfg.secret, "login", cookies(request).find(([k]) => k === loginCookieName(origin, state))?.[1]);
   // The cookie ties the callback to the browser that started the login.
-  if (!login || login.login_state !== q.get("state")) {
+  if (!login || login.login_state !== state) {
     return errorPage("this sign-in link has expired or was opened in another browser. Start again from your MCP client.");
   }
-  const clear = { "Set-Cookie": loginCookie(origin, "", 0) };
+  const clear = [loginCookie(origin, state, "", 0)];
   const loginCode = q.get("code");
   if (!loginCode) {
     const error = q.get("error") === "access_denied" ? "access_denied" : "server_error";
