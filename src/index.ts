@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { proxyApprovals } from "./approvals";
 import { createConfirmer } from "./confirm";
+import { landingPage, landingPolicy, wantsLandingPage } from "./landing";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, LOCAL_TOOLS, type ServerConfig } from "./server";
 import { createTokenCheck } from "./tokencheck";
@@ -113,9 +114,10 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
 };
 
-function withSecurityHeaders(res: Response): Response {
+function withSecurityHeaders(res: Response, policy?: string): Response {
   const out = new Response(res.body, res);
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
+  if (policy) out.headers.set("Content-Security-Policy", policy);
   return out;
 }
 
@@ -144,9 +146,10 @@ export function createWorker(fetchImpl?: typeof fetch) {
         });
       }
       if (url.pathname !== "/mcp") {
-        return url.pathname === "/"
-          ? new Response("Plivo MCP server. Connect an MCP client to /mcp.\n", { headers: { "Content-Type": "text/plain" } })
-          : new Response("Not found\n", { status: 404 });
+        if (url.pathname !== "/") return new Response("Not found\n", { status: 404 });
+        return wantsLandingPage(request)
+          ? landingPage(request)
+          : new Response("Plivo MCP server. Connect an MCP client to /mcp.\n", { headers: { "Content-Type": "text/plain", Vary: "Accept" } });
       }
 
       const rejected =
@@ -216,7 +219,12 @@ export function createWorker(fetchImpl?: typeof fetch) {
       return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
     },
   };
-  return { fetch: async (request: Request, env: Env) => withSecurityHeaders(await worker.fetch(request, env)) };
+  return {
+    fetch: async (request: Request, env: Env) => {
+      const res = await worker.fetch(request, env);
+      return withSecurityHeaders(res, await landingPolicy(res));
+    },
+  };
 }
 
 export default createWorker();

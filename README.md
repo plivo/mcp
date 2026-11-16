@@ -7,6 +7,8 @@ It runs as a stateless Cloudflare Worker. It never holds Plivo credentials: each
 scoped `stk_` token to Plivo's auth proxy (`/v1/proxy`), which checks the token's scope and swaps in the account's
 Auth ID and Auth Token.
 
+Opened in a browser, `https://mcp.plivo.com/` serves a landing page (`src/landing.ts`); other clients get one plain line.
+
 ```
 MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer stk_──▶ auth proxy /v1/proxy ──Basic──▶ api.plivo.com
 ```
