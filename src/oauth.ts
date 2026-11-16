@@ -150,8 +150,8 @@ export function redirectUriError(uri: unknown): string | undefined {
 
 const shownHost = (url: URL) => url.host || url.protocol;
 
-/** A self-declared client name without the invisible characters that could pad it or reorder what is shown. */
-function cleanName(name: unknown): string {
+/** A name someone else chose, without the invisible characters that could pad it or reorder what is shown. */
+export function cleanName(name: unknown): string {
   if (typeof name !== "string") return "";
   const clean = name.replace(/[\p{C}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/gu, " ").trim();
   return [...clean].slice(0, MAX_NAME_CHARS).join("");

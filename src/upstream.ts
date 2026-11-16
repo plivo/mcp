@@ -9,7 +9,7 @@ export interface Credential {
 
 // The auth proxy mints "stk_" + 32 base62 characters.
 export const STK_RE = /^Bearer (stk_[A-Za-z0-9]{32})$/;
-const AUTH_ID_RE = /^[A-Za-z0-9]{10,40}$/;
+export const AUTH_ID_RE = /^[A-Za-z0-9]{10,40}$/;
 
 /**
  * Accepts `Bearer stk_…` (production: the auth proxy swaps it for the account's credentials), and HTTP

@@ -22,6 +22,8 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
 | `diagnose_call` | Ask Plivo's support assistant what happened on a call, from traces the API does not expose |
 | `diagnose_message` | Ask Plivo's support assistant why a message failed or what its status means |
+| `list_organizations` | List the organizations the connection may use and which one is current |
+| `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
 `get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
@@ -50,6 +52,25 @@ The server trusts the model to actually ask; what it enforces is that only the p
 same caller, while the code is fresh. Being stateless, a code can be reused for that same request until it
 expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
+
+Every approval names the account it will run on (Auth ID and name) and is kept with that Auth ID. The account is
+read again when the answer arrives, and the request is sent only if the connection is still on that account. An
+approved request is addressed to that Auth ID rather than `me`, so the auth proxy itself refuses it if a switch lands
+after the check (the Lookup paths carry no Auth ID, so there the check alone decides). A token without the account permission is named from the organizations route instead; if Plivo
+cannot say which account the connection is on, nothing is asked or sent.
+
+## Organizations
+
+A user who belongs to several organizations ticks, at sign-in, the ones the connection may use. The token starts on
+the sign-in organization, and the auth proxy runs every call on the token's current organization, so the other tools
+take no organization parameter. `list_organizations` lists the allowed organizations
+(`GET /v1/proxy/mcp/organizations`). `switch_organization` takes an Auth ID from that list, asks the user, naming both
+organizations, and then moves the token (`POST /v1/proxy/mcp/organization`). The Worker keeps nothing: it reads the
+current organization from the proxy on each call. A switch applies to calls made after it returns, so a call sent
+alongside it may run on either organization.
+
+A switch between an approval's question and its answer voids that approval. An organization outside the list is a
+plain tool error; changing the list takes a new sign-in.
 
 ## Sign-in
 

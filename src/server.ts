@@ -2,12 +2,13 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalReasons, confirmationCodeField, confirmGate, type Confirmer } from "./confirm";
+import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer } from "./confirm";
 import { diagnose, diagnoseTools } from "./diagnose";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
-import { buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
+import { listOrganizations, NOT_ALLOWED, switchOrganization, switchRequest, type OrgFailure } from "./organizations";
+import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential, type UpstreamResult } from "./upstream";
 import { inputError } from "./validate";
 
 export interface ServerConfig {
@@ -72,16 +73,35 @@ const callInput = z.object({
 const PRICE = /^\d+(\.\d+)?$/;
 const LOOKUP_OP = "GET lookup.plivo.com/v1/Number/{PhoneNumber}";
 
+// Short, so a slow lookup refuses quickly instead of adding its wait to the action's own.
+const LOOKUP_TIMEOUT_MS = 5_000;
+
+// The auth proxy's refusal of a path whose Auth ID is not the token's current organization: by code, or by text from a
+// proxy that predates the code.
+function otherAccount(res: UpstreamResult): boolean {
+  const errors = (res.body as { errors?: { error?: unknown; global_error?: unknown } } | null)?.errors;
+  return res.status === 403 && (errors?.error === "account_mismatch" || errors?.global_error === "Token cannot operate on a different account");
+}
+
 /**
- * What a paid action costs and which account pays, for the approval preview. A failed lookup never blocks the preview.
- * Plivo shows tax only on the invoice, so the preview always says it may apply.
+ * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
+ * shows (with the cost, for a paid action). `unknown` when Plivo cannot say which account the connection is on, so
+ * nothing can be asked or sent. Plivo shows tax only on the invoice, so the preview always says it may apply.
  */
-async function costLines(op: Operation, args: CallArgs, caller: Credential, config: ServerConfig): Promise<string[]> {
+async function approvalAccount(
+  op: Operation,
+  args: CallArgs,
+  caller: Credential,
+  config: ServerConfig,
+  asking: boolean,
+): Promise<{ id: string; lines: string[] } | { unknown: true }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
     try {
-      const res = await callUpstream(r, caller, config.fetchImpl);
+      const res = await callUpstream(r, caller, config.fetchImpl, LOOKUP_TIMEOUT_MS);
+      // Nothing may be sent before the organization is known, so this is where an expired token first shows.
+      if (res.tokenRejected) config.onTokenRejected?.();
       return res.ok && res.body !== null && typeof res.body === "object" ? (res.body as Record<string, unknown>) : undefined;
     } catch {
       return undefined;
@@ -97,18 +117,26 @@ async function costLines(op: Operation, args: CallArgs, caller: Credential, conf
     const setup = String(hit?.setup_rate ?? "");
     return PRICE.test(monthly) && PRICE.test(setup) ? `Price: $${monthly} a month and $${setup} setup.` : undefined;
   };
-  const [account, price] = await Promise.all([get("GET /", {}), op.id === "POST /PhoneNumber/{number}/" ? numberPrice() : undefined]);
+  const buying = asking && op.id === "POST /PhoneNumber/{number}/";
+  const [account, price] = await Promise.all([get("GET /", {}), buying ? numberPrice() : undefined]);
+  let id = typeof account?.auth_id === "string" && AUTH_ID_RE.test(account.auth_id) ? account.auth_id : undefined;
+  let name = account?.name;
+  if (!id) {
+    // A token without the account permission can still be on any of its organizations; this route needs no permission.
+    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl, LOOKUP_TIMEOUT_MS);
+    const current = "error" in listed ? undefined : listed.organizations.find((o) => o.current);
+    if (!current) return { unknown: true };
+    id = current.auth_id;
+    name = current.name;
+  }
+  if (!asking) return { id, lines: [] };
   const balance = String(account?.cash_credits ?? "");
-  const lines = [
-    typeof account?.name === "string"
-      ? `Account: ${JSON.stringify(account.name)}${PRICE.test(balance) ? `, balance $${balance}` : ""}.`
-      : "Account: unavailable.",
-  ];
-  if (op.id === "POST /PhoneNumber/{number}/") lines.push(price ?? "Price: unavailable; search_numbers shows it.");
+  const lines = [`Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.`];
+  if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
   // The Lookup API's published rate; the API itself returns no price.
   if (op.id === LOOKUP_OP) lines.push("Price: $0.004 per lookup.");
-  lines.push("Taxes may apply.");
-  return lines;
+  if (op.costs_money) lines.push("Taxes may apply.");
+  return { id, lines };
 }
 
 /** Tools answered from the bundled catalog and docs: a call to one never reaches the auth proxy. */
@@ -125,7 +153,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "plivo_api_read (GET) or plivo_api_write (everything else). To learn how something works (Plivo XML for " +
         "calls, error codes, setup guides), use search_docs. To find out why a call or message failed, use diagnose_call or " +
         "diagnose_message. Actions that cost money, cannot be undone, give lasting access to the account, change where " +
-        "calls and messages go or change a live AI agent need the user's approval; never approve one on the user's behalf.",
+        "calls and messages go or change a live AI agent need the user's approval; never approve one on the user's behalf. " +
+        "Every call runs on the connection's current organization; list_organizations shows it and switch_organization changes it.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -147,23 +176,32 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if ("error" in req) return text(req.error, true);
     const invalid = kind === "write" ? inputError(op, args) : undefined;
     if (invalid) return text(`Nothing was done: ${invalid}.`, true);
+    let send = req;
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
-      // Looked up only for the question, not the call that carries the answer.
-      const asking = args.confirmation_code === undefined && reqCtx.mcpReq.requestState() === undefined;
-      const extra = asking && op.costs_money ? await costLines(op, args, caller, config) : [];
-      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, extra);
+      // A dialog client is asked whatever code the model brings, so that code must not empty the question.
+      const asking = reqCtx.mcpReq.requestState() === undefined && (args.confirmation_code === undefined || canElicit(reqCtx));
+      const account = await approvalAccount(op, args, caller, config, asking);
+      if ("unknown" in account) {
+        return text("Nothing was done: Plivo could not say which organization this connection is on, so this action cannot be approved now. Try again.", true);
+      }
+      const gate = await confirmGate(config.confirmer, reqCtx, op, req, args.confirmation_code, account.lines, account.id);
       if (!gate.approved) return gate.result;
+      // Addressed to the approved organization, not `me`: the auth proxy refuses it if a switch landed after the check above.
+      const bound = buildRequest(op, args, { ...caller, authId: account.id }, config.apiBase);
+      if ("error" in bound) return text(bound.error, true);
+      send = bound;
     }
     let res;
     try {
-      res = await callUpstream(req, caller, config.fetchImpl);
+      res = await callUpstream(send, caller, config.fetchImpl);
     } catch (e) {
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
       return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
     }
     if (res.tokenRejected) config.onTokenRejected?.();
     if (res.scopeMissing) config.onScopeMissing?.();
+    if (send !== req && otherAccount(res)) return text(MOVED, true);
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;
@@ -251,6 +289,69 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     async (args, reqCtx) => call("write", args, reqCtx),
+  );
+
+  const orgFailed = (f: OrgFailure) => {
+    if (f.tokenRejected) config.onTokenRejected?.();
+    return text(f.error, true);
+  };
+
+  async function switchTo(args: { organization: string; confirmation_code?: string }, reqCtx: ServerContext) {
+    if (!caller) return text("This request has no Plivo credentials.", true);
+    // Read on every call: it names the target for the question, and says where the connection is when the answer comes.
+    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+    if ("error" in listed) return orgFailed(listed);
+    const from = listed.organizations.find((o) => o.current);
+    const to = listed.organizations.find((o) => o.auth_id === args.organization);
+    if (!to) return text(NOT_ALLOWED, true);
+    if (to.current) return text({ status: "already_current", organization: to });
+    if (!from) return text("Nothing was changed: Plivo did not say which organization this connection is on now. Try again.", true);
+    if (config.confirmationMode === "block") return text("Switching organization needs the user's approval, and this server is set to refuse such actions.", true);
+
+    const req = switchRequest(config.apiBase, to.auth_id);
+    if (config.confirmationMode === "confirm") {
+      if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
+      const action = [
+        "Switch organization",
+        "Every later action on this connection will run on the new organization, until the next switch.",
+        `From: ${nameAccount(from.name, from.auth_id)}.`,
+        `To: ${nameAccount(to.name, to.auth_id)}.`,
+      ].join("\n");
+      const gate = await approvalGate(config.confirmer, reqCtx, req, action, args.confirmation_code, from.auth_id);
+      if (!gate.approved) return gate.result;
+    }
+    const done = await switchOrganization(req, caller, config.fetchImpl);
+    if ("error" in done) return orgFailed(done);
+    return text({ status: "switched", organization: done, note: "Every later call on this connection runs on this organization." });
+  }
+
+  server.registerTool(
+    "list_organizations",
+    {
+      title: "List organizations",
+      description: "List the organizations this connection may use and which one is current.",
+      inputSchema: z.strictObject({}),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async () => {
+      if (!caller) return text("This request has no Plivo credentials.", true);
+      const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+      return "error" in listed ? orgFailed(listed) : text(listed);
+    },
+  );
+
+  server.registerTool(
+    "switch_organization",
+    {
+      title: "Switch organization",
+      description: "Move this connection to another of its organizations, so every later call runs there. Needs the user's approval; switch only when the user asks.",
+      inputSchema: z.strictObject({
+        organization: z.string().regex(AUTH_ID_RE).describe("Auth ID of the organization to switch to, from list_organizations."),
+        confirmation_code: confirmationCodeField,
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async (args, reqCtx) => switchTo(args, reqCtx),
   );
 
   for (const s of shortcuts) {
