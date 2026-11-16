@@ -71,6 +71,10 @@ Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth
 expired or was revoked (its 401 says `error="invalid_token"`), the tool call gets the same HTTP 401, and the client signs
 in again. A 401 from Plivo for a valid token stays a tool error, so it cannot cause a sign-in loop.
 
+Requests that never reach the auth proxy (`initialize`, `tools/list`, the search tools) are checked too: the Worker
+reads the account through the proxy with the caller's token and answers the same 401 if the proxy refuses it. An
+accepted token is not asked about again for 60 seconds, and if the proxy cannot be reached the request goes on.
+
 Behind a proxy that forwards the Worker's own Host (CloudFront in front of the workers.dev name), set `PUBLIC_ORIGIN`
 to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
 cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<PUBLIC_ORIGIN>/oauth/callback`.
@@ -112,6 +116,20 @@ npm run typecheck
 To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.vars`, fill in `CONFIRM_SECRET`, and `npm run dev`, then
 point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
 Basic auth is for local development only; production accepts `stk_` tokens alone.
+
+## Deploy
+
+A merge to `main` deploys the Worker: `.github/workflows/deploy.yml` runs the type check and the tests, then
+`wrangler deploy`. Pull requests run the same checks without deploying (`ci.yml`).
+
+The deploy needs two settings on the repository:
+
+- `CLOUDFLARE_API_TOKEN`, a secret in the `production` environment: a Cloudflare token with Workers Scripts: Edit
+  on the account that owns the Worker. Limit the environment to `main`.
+- `CF_ACCOUNT_ID`, a repository variable: that account's id.
+
+The Worker's own secrets are set once in Cloudflare with `wrangler secret put` and outlive deploys. To roll back,
+pick the previous version in the Cloudflare dashboard, or run `npx wrangler rollback`.
 
 ## Not built yet
 

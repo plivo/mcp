@@ -15,6 +15,11 @@ const API = "http://127.0.0.1:8799/v1/proxy";
 const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
 const SIP_PASSWORD = "x".repeat(10);
 
+const OAUTH = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+// The account read the Worker asks the auth proxy for before it answers a request that would not reach the proxy.
+const PROBE = `${API}/v1/Account/me/`;
+const REFUSED: Reply = { status: 401, body: { error: { global_error: "Token is unknown or expired" } }, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } };
+
 // Preview lookups (account, price) are reads; what a user approves is the write.
 const writes = (sent: Sent[]) => sent.filter((r) => r.method !== "GET");
 
@@ -134,6 +139,87 @@ describe.each([
   });
 });
 
+describe("a token is checked with the auth proxy before the handshake is answered", () => {
+  const rpc = (toWorker: typeof fetch, method: string, params: unknown = {}) =>
+    toWorker("http://localhost/mcp", {
+      method: "POST",
+      headers: { Authorization: STK, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+  const probes = (sent: Sent[]) => sent.filter((r) => r.url === PROBE);
+
+  it.each<[string, unknown]>([
+    ["initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } }],
+    ["tools/list", {}],
+    ["tools/call", { name: "plivo_api_search", arguments: { query: "send an sms" } }],
+  ])("a made-up token gets the sign-in 401 on %s", async (method, params) => {
+    const { toWorker } = setup(OAUTH, REFUSED);
+    const res = await rpc(toWorker, method, params);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe('Bearer error="invalid_token", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
+    expect(await res.json()).toMatchObject({ error: "invalid_token" });
+  });
+
+  it.each<[string, { pin: "2026-07-28" } | undefined]>([
+    ["2025 client", undefined],
+    ["2026-07-28 client", { pin: "2026-07-28" }],
+  ])("%s: a made-up token cannot connect", async (_, mode) => {
+    const { toWorker } = setup(OAUTH, REFUSED);
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    await expect(connect(recording, STK, mode)).rejects.toThrow();
+    expect(replies.map((r) => r.status)).toEqual([401]);
+  });
+
+  it("asks once a minute for a token the proxy accepts, and never before a tool call the proxy checks itself", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { toWorker, sent } = setup(OAUTH);
+      expect((await rpc(toWorker, "tools/call", { name: "plivo_api_read", arguments: { id: "GET /Call/" } })).status).toBe(200);
+      expect(sent.map((r) => r.url)).toEqual([`${API}/v1/Account/me/Call/`]);
+
+      for (const mode of [undefined, { pin: "2026-07-28" as const }]) {
+        const client = await connect(toWorker, STK, mode);
+        expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+      }
+      expect(probes(sent)).toEqual([{ url: PROBE, method: "GET", auth: STK, body: undefined }]);
+
+      vi.setSystemTime(Date.now() + 61_000);
+      expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+      expect(probes(sent)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each<[string, () => Reply]>([
+    ["answers 503", () => ({ status: 503, body: { errors: { global_error: "Token store unavailable" } } })],
+    ["cannot be reached", () => { throw new TypeError("fetch failed"); }],
+  ])("lets the handshake through when the proxy %s, and asks again next time", async (_, reply) => {
+    const { toWorker, sent } = setup(OAUTH, reply);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(probes(sent)).toHaveLength(2);
+  });
+
+  it("accepts a token that lacks the account permission", async () => {
+    const { toWorker, sent } = setup(OAUTH, { status: 403, body: { errors: { global_error: "Token is not authorised for this module", required_module: "account.read" } } });
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(probes(sent)).toHaveLength(1);
+  });
+
+  it("asks nothing when sign-in is off", async () => {
+    const { toWorker, sent } = setup({}, REFUSED);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(sent).toHaveLength(0);
+  });
+});
+
 describe("search and details", () => {
   it.each([
     ["send an sms", "POST /Message/"],
@@ -217,12 +303,7 @@ describe("guardrails", () => {
     ["2025 client", undefined],
     ["2026-07-28 client", { pin: "2026-07-28" }],
   ])("%s: a token Plivo refuses gets an HTTP 401 that starts sign-in again", async (_, mode) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, {
-      status: 401,
-      body: { error: { global_error: "Token is expired" } },
-      headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' },
-    });
+    const { toWorker } = setup(OAUTH, (url) => (url === PROBE ? { status: 200, body: {} } : REFUSED));
     const replies: Response[] = [];
     const recording = async (input: string | URL | Request, init?: RequestInit) => {
       const res = await toWorker(input, init);
@@ -241,8 +322,7 @@ describe("guardrails", () => {
     ["2025 client", undefined],
     ["2026-07-28 client", { pin: "2026-07-28" }],
   ])("%s: a token minted without the module a tool needs gets an HTTP 403 that asks for approval again", async (_, mode) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, {
+    const { toWorker } = setup(OAUTH, {
       status: 403,
       body: { api_id: "x", data: null, errors: { global_error: "Token is not authorised for this module", required_module: "agent.read" }, message: "" },
     });
@@ -264,8 +344,7 @@ describe("guardrails", () => {
     [401, { error: "Authentication credentials invalid" }],
     [403, { api_id: "x", error: "subaccount cannot do this" }],
   ])("keeps a %i from Plivo behind a valid token a tool error, so the client is not sent round a sign-in loop", async (status, body) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, { status, body });
+    const { toWorker } = setup(OAUTH, { status, body });
     const client = await connect(toWorker);
     const res = await call(client, "plivo_api_read", { id: "GET /Call/" });
     expect(res.isError).toBe(true);
