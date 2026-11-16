@@ -6,9 +6,8 @@ const MAX_CACHED = 1000;
 const PROBE_TIMEOUT_MS = 3_000;
 
 /**
- * Asks the auth proxy whether it still accepts a token, for requests that never reach it otherwise. The answer is
- * false only when the proxy refuses the token itself: if it cannot be asked the request goes on, since every tool
- * call that reaches Plivo is checked again.
+ * Asks the auth proxy whether it still accepts a token. The answer is false only when the proxy refuses the token
+ * itself: if it cannot be asked the request goes on, since every tool call that reaches Plivo is checked again.
  */
 export function createTokenCheck(fetchImpl?: typeof fetch) {
   // Keyed by a hash, so the isolate holds no token after its request. Only acceptances are kept.
