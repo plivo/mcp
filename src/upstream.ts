@@ -122,7 +122,7 @@ export interface UpstreamResult {
 const TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 1_000_000;
 
-export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImpl: typeof fetch = fetch): Promise<UpstreamResult> {
+export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImpl: typeof fetch = fetch, timeoutMs = TIMEOUT_MS): Promise<UpstreamResult> {
   const headers: Record<string, string> = {
     Authorization: cred.authorization,
     Accept: "application/json",
@@ -135,7 +135,7 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     headers,
     body: req.body,
     redirect: "manual",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status >= 300 && res.status < 400) {
     await res.body?.cancel();

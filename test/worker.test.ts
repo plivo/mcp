@@ -16,6 +16,11 @@ const API = "http://127.0.0.1:8799/v1/proxy";
 const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
 const SIP_PASSWORD = "x".repeat(10);
 
+const OAUTH = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+// The account read the Worker asks the auth proxy for before it answers a request that would not reach the proxy.
+const PROBE = `${API}/v1/Account/me/`;
+const REFUSED: Reply = { status: 401, body: { error: { global_error: "Token is unknown or expired" } }, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } };
+
 // Preview lookups (account, price) are reads; what a user approves is the write.
 const writes = (sent: Sent[]) => sent.filter((r) => r.method !== "GET");
 
@@ -128,6 +133,87 @@ describe.each([
   });
 });
 
+describe("a token is checked with the auth proxy before the handshake is answered", () => {
+  const rpc = (toWorker: typeof fetch, method: string, params: unknown = {}) =>
+    toWorker("http://localhost/mcp", {
+      method: "POST",
+      headers: { Authorization: STK, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+  const probes = (sent: Sent[]) => sent.filter((r) => r.url === PROBE);
+
+  it.each<[string, unknown]>([
+    ["initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } }],
+    ["tools/list", {}],
+    ["tools/call", { name: "plivo_api_search", arguments: { query: "send an sms" } }],
+  ])("a made-up token gets the sign-in 401 on %s", async (method, params) => {
+    const { toWorker } = setup(OAUTH, REFUSED);
+    const res = await rpc(toWorker, method, params);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe('Bearer error="invalid_token", resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
+    expect(await res.json()).toMatchObject({ error: "invalid_token" });
+  });
+
+  it.each<[string, { pin: "2026-07-28" } | undefined]>([
+    ["2025 client", undefined],
+    ["2026-07-28 client", { pin: "2026-07-28" }],
+  ])("%s: a made-up token cannot connect", async (_, mode) => {
+    const { toWorker } = setup(OAUTH, REFUSED);
+    const replies: Response[] = [];
+    const recording = async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await toWorker(input, init);
+      replies.push(res.clone());
+      return res;
+    };
+    await expect(connect(recording, STK, mode)).rejects.toThrow();
+    expect(replies.map((r) => r.status)).toEqual([401]);
+  });
+
+  it("asks once a minute for a token the proxy accepts, and never before a tool call the proxy checks itself", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { toWorker, sent } = setup(OAUTH);
+      expect((await rpc(toWorker, "tools/call", { name: "plivo_api_read", arguments: { id: "GET /Call/" } })).status).toBe(200);
+      expect(sent.map((r) => r.url)).toEqual([`${API}/v1/Account/me/Call/`]);
+
+      for (const mode of [undefined, { pin: "2026-07-28" as const }]) {
+        const client = await connect(toWorker, STK, mode);
+        expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+      }
+      expect(probes(sent)).toEqual([{ url: PROBE, method: "GET", auth: STK, body: undefined }]);
+
+      vi.setSystemTime(Date.now() + 61_000);
+      expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+      expect(probes(sent)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each<[string, () => Reply]>([
+    ["answers 503", () => ({ status: 503, body: { errors: { global_error: "Token store unavailable" } } })],
+    ["cannot be reached", () => { throw new TypeError("fetch failed"); }],
+  ])("lets the handshake through when the proxy %s, and asks again next time", async (_, reply) => {
+    const { toWorker, sent } = setup(OAUTH, reply);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(probes(sent)).toHaveLength(2);
+  });
+
+  it("accepts a token that lacks the account permission", async () => {
+    const { toWorker, sent } = setup(OAUTH, { status: 403, body: { errors: { global_error: "Token is not authorised for this module", required_module: "account.read" } } });
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(probes(sent)).toHaveLength(1);
+  });
+
+  it("asks nothing when sign-in is off", async () => {
+    const { toWorker, sent } = setup({}, REFUSED);
+    expect((await rpc(toWorker, "tools/list")).status).toBe(200);
+    expect(sent).toHaveLength(0);
+  });
+});
+
 describe("search and details", () => {
   it.each([
     ["send an sms", "POST /Message/"],
@@ -211,12 +297,7 @@ describe("guardrails", () => {
     ["2025 client", undefined],
     ["2026-07-28 client", { pin: "2026-07-28" }],
   ])("%s: a token Plivo refuses gets an HTTP 401 that starts sign-in again", async (_, mode) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, {
-      status: 401,
-      body: { error: { global_error: "Token is expired" } },
-      headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' },
-    });
+    const { toWorker } = setup(OAUTH, (url) => (url === PROBE ? { status: 200, body: {} } : REFUSED));
     const replies: Response[] = [];
     const recording = async (input: string | URL | Request, init?: RequestInit) => {
       const res = await toWorker(input, init);
@@ -235,8 +316,7 @@ describe("guardrails", () => {
     ["2025 client", undefined],
     ["2026-07-28 client", { pin: "2026-07-28" }],
   ])("%s: a token minted without the module a tool needs gets an HTTP 403 that asks for approval again", async (_, mode) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, {
+    const { toWorker } = setup(OAUTH, {
       status: 403,
       body: { api_id: "x", data: null, errors: { global_error: "Token is not authorised for this module", required_module: "agent.read" }, message: "" },
     });
@@ -258,8 +338,7 @@ describe("guardrails", () => {
     [401, { error: "Authentication credentials invalid" }],
     [403, { api_id: "x", error: "subaccount cannot do this" }],
   ])("keeps a %i from Plivo behind a valid token a tool error, so the client is not sent round a sign-in loop", async (status, body) => {
-    const oauth = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
-    const { toWorker } = setup(oauth, { status, body });
+    const { toWorker } = setup(OAUTH, { status, body });
     const client = await connect(toWorker);
     const res = await call(client, "plivo_api_read", { id: "GET /Call/" });
     expect(res.isError).toBe(true);
@@ -445,6 +524,12 @@ describe("confirmation", () => {
     ["POST /AgentFlow/{agent_id}/Publish/", { path_params: { agent_id: "a1" } }, "puts an AI agent live"],
     ["POST /AgentFlow/{agent_id}/Pause/", { path_params: { agent_id: "a1" } }, "stops a live AI agent"],
     ["POST /Conference/{conference_name}/Member/{member_id}/Kick/", { path_params: { conference_name: "c1", member_id: "7" } }, "removes a member from a live conference"],
+    ["POST /", { params: { city: "Austin" } }, "changes the account's own details"],
+    ["POST /Call/{call_uuid}/DTMF/", { path_params: { call_uuid: "c1" }, params: { digits: "1" } }, "presses keypad digits on a live call"],
+    ["POST /10dlc/Campaign/{campaign_id}/Number/", { path_params: { campaign_id: "C1" }, params: { numbers: ["14155550134"] } }, "carriers or regulators review"],
+    ["POST /PhoneNumber/Compliance/Link/", { params: { numbers: [{ number: "14155550134", compliance_application_id: "x" }] } }, "carriers or regulators review"],
+    ["PATCH /PhoneNumber/Compliance/{compliance_id}/", { path_params: { compliance_id: "x1" }, params: { callback_url: "https://example.com/c" } }, "carriers or regulators review"],
+    ["POST /TollfreeVerification/", { params: { number: "18335550134" } }, "carriers or regulators review"],
   ])("%s is free but asks first, and says why", async (id, args, why) => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
@@ -520,11 +605,12 @@ describe("confirmation", () => {
   it("sends other free writes without asking, and lists the reasons in details", async () => {
     const { toWorker, sent } = setup();
     const client = await connect(toWorker);
-    const dtmf = await call(client, "plivo_api_write", { id: "POST /Call/{call_uuid}/DTMF/", path_params: { call_uuid: "c1" }, params: { digits: "1" } });
-    expect(dtmf.isError).toBe(false);
+    const mute = "POST /Conference/{conference_name}/Member/{member_id}/Mute/";
+    const muted = await call(client, "plivo_api_write", { id: mute, path_params: { conference_name: "c1", member_id: "7" } });
+    expect(muted.isError).toBe(false);
     expect(sent).toHaveLength(1);
     const details = (id: string) => call(client, "plivo_api_details", { id }).then((r) => (r.parsed as { needs_approval: string[] }).needs_approval);
-    expect(await details("POST /Call/{call_uuid}/DTMF/")).toEqual([]);
+    expect(await details(mute)).toEqual([]);
     expect(await details("POST /Application/{app_id}/")).toEqual(["This changes where this account's calls or messages are sent."]);
   });
 
@@ -609,6 +695,43 @@ describe("hardening", () => {
       ((await call(client, "send_sms", { src: "+14155550100", dst, text: "hi" })).parsed as { action: string }).action;
     expect(await preview("+14155550101<+14155550102<+14155550103")).toContain("3 recipients (dst).");
     expect(await preview("+14155550101")).not.toContain("recipients");
+  });
+
+  const sms = (extra: Record<string, unknown>) => ["send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi", ...extra }] as const;
+  const dial = (extra: Record<string, unknown>) =>
+    ["plivo_api_write", { id: "POST /Call/", params: { from: "14155550100", to: "14155550101", answer_url: "https://example.com/a", ...extra } }] as const;
+  const eleven = Array.from({ length: 11 }, (_, i) => `1415555${String(1000 + i)}`).join("<");
+
+  it.each<[string, readonly [string, Record<string, unknown>], string]>([
+    ["a destination that is not a number", sms({ dst: "abc" }), 'dst must be a phone number'],
+    ["a number too short to buy", ["buy_number", { number: "123" }], "number must be a phone number"],
+    ["more SMS recipients than one approval may reach", sms({ dst: eleven }), "dst has 11 destinations"],
+    ["more call destinations than one approval may reach", dial({ to: eleven }), "to has 11 destinations"],
+    ["a plain-http answer URL", dial({ answer_url: "http://example.com/a" }), "answer_url must start with https://"],
+    ["the cloud metadata address", dial({ answer_url: "https://169.254.169.254/latest/meta-data/" }), "not an internal address"],
+    ["a private address spelt as one number", dial({ hangup_url: "https://2130706433/x" }), "not an internal address"],
+    ["an IPv6 loopback callback", sms({ url: "https://[::1]/cb" }), "not an internal address"],
+    ["a v4-mapped IPv6 private address", sms({ url: "https://[::ffff:10.0.0.1]/cb" }), "not an internal address"],
+    ["a single-label host", dial({ fallback_url: "https://intranet/x" }), "not an internal address"],
+    ["a URL carrying a login", dial({ ring_url: `https://${["u", "p"].join(":")}@example.com/x` }), "must not carry a username or password"],
+    ["one bad URL in a media list", sms({ media_urls: ["https://example.com/a.png", "https://localhost/b.png"] }), "media_urls must point at a public host"],
+  ])("refuses %s before asking for approval", async (_, [tool, args], why) => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), tool, args);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain(why);
+    expect(res.raw).not.toContain("confirmation_code");
+    expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, readonly [string, Record<string, unknown>]]>([
+    ["ten recipients, a short-code sender and a public callback", sms({ src: "55512", dst: eleven.split("<").slice(1).join("<"), url: "https://hooks.example.com/s?x=1" })],
+    ["an alphanumeric sender ID", sms({ src: "PLIVO" })],
+    ["a SIP destination and a public IPv6 callback", dial({ to: "sip:alice@sip.example.com", hangup_url: "https://[2606:4700::1111]/h" })],
+    ["a wss stream target", ["plivo_api_write", { id: "POST /Call/{call_uuid}/Stream/", path_params: { call_uuid: "c1" }, params: { service_url: "wss://voice.example.com/s" } }]],
+  ])("still asks for approval of %s", async (_, [tool, args]) => {
+    const res = await call(await connect(setup().toWorker), tool, args);
+    expect(res.parsed).toMatchObject({ status: "confirmation_required" });
   });
 
   it.each<[string, Record<string, unknown>]>([

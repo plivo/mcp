@@ -8,7 +8,8 @@ import {
 import { proxyApprovals } from "./approvals";
 import { createConfirmer } from "./confirm";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
-import { buildServer, type ServerConfig } from "./server";
+import { buildServer, LOCAL_TOOLS, type ServerConfig } from "./server";
+import { createTokenCheck } from "./tokencheck";
 import { parseCredential, readCapped } from "./upstream";
 
 export interface Env {
@@ -74,14 +75,19 @@ function unauthorized(reason: string, challenge: string, error = "unauthorized",
 // The SDK answers 413 past this itself; peeking at a body first must not buffer more than it would.
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
-/** Whether a JSON-RPC body (one message or a batch) calls a tool: the only requests that reach Plivo. */
-async function callsTool(request: Request): Promise<boolean> {
+interface RpcMessage {
+  method?: unknown;
+  params?: { name?: unknown };
+}
+
+/** The messages of a JSON-RPC body (one or a batch); none when it is not JSON. */
+async function rpcMessages(request: Request): Promise<(RpcMessage | null)[]> {
   const text = await readCapped(request.clone().body, MAX_REQUEST_BYTES);
   try {
     const body: unknown = JSON.parse(text);
-    return (Array.isArray(body) ? body : [body]).some((m) => (m as { method?: unknown } | null)?.method === "tools/call");
+    return (Array.isArray(body) ? body : [body]) as (RpcMessage | null)[];
   } catch {
-    return false;
+    return [];
   }
 }
 
@@ -114,6 +120,7 @@ function withSecurityHeaders(res: Response): Response {
 }
 
 export function createWorker(fetchImpl?: typeof fetch) {
+  const tokenAccepted = createTokenCheck(fetchImpl);
   const worker = {
     async fetch(request: Request, env: Env): Promise<Response> {
       const url = new URL(request.url);
@@ -186,15 +193,18 @@ export function createWorker(fetchImpl?: typeof fetch) {
           scopeMissing = true;
         },
       };
-      const toolCall = request.method === "POST" && (await callsTool(request));
+      const messages = request.method === "POST" ? await rpcMessages(request) : [];
+      const toolCall = messages.some((m) => m?.method === "tools/call");
+      const tokenRefused = () => unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
+      // The auth proxy checks a call to one of its tools itself. Anything else would answer a made-up token.
+      const proxyChecks = messages.length > 0 && messages.every((m) => m?.method === "tools/call" && !LOCAL_TOOLS.has(m.params?.name as string));
+      if (env.PLIVO_LOGIN_BASE && !proxyChecks && !(await tokenAccepted(cred, env.PLIVO_API_BASE))) return tokenRefused();
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;
       // A streamed reply may still be running the tool, so whether Plivo refused the token is known only once it is read.
       const body = await res.arrayBuffer();
-      if (tokenRejected) {
-        return unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
-      }
+      if (tokenRejected) return tokenRefused();
       if (scopeMissing && env.PLIVO_LOGIN_BASE) {
         return unauthorized(
           "This connection was approved before this tool's permission existed. Approve the Plivo connection again to use it.",

@@ -7,6 +7,7 @@ import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
 import { buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
+import { inputError } from "./validate";
 
 export interface ServerConfig {
   apiBase: string;
@@ -107,6 +108,9 @@ async function costLines(op: Operation, args: CallArgs, caller: Credential, conf
   return lines;
 }
 
+/** Tools answered from the bundled catalog and docs: a call to one never reaches the auth proxy. */
+export const LOCAL_TOOLS = new Set(["plivo_api_search", "plivo_api_details", "search_docs"]);
+
 export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpServer {
   const server = new McpServer(
     { name: "plivo", version: "0.1.0" },
@@ -138,6 +142,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     // Built before asking, so the user is never asked to approve a request that cannot be sent.
     const req = buildRequest(op, args, caller, config.apiBase);
     if ("error" in req) return text(req.error, true);
+    const invalid = kind === "write" ? inputError(op, args) : undefined;
+    if (invalid) return text(`Nothing was done: ${invalid}.`, true);
     if (needsConfirmation && config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
       // Looked up only for the question, not the call that carries the answer.
