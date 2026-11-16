@@ -36,7 +36,7 @@ export interface Env {
   PLIVO_LOGIN_BASE?: string;
   /** Signs OAuth client ids, logins and codes; at least 32 characters. Set with `wrangler secret put OAUTH_SECRET`. */
   OAUTH_SECRET?: string;
-  /** The auth proxy's mcp_client_secret, sent when redeeming a login code; at least 32 characters. A Worker secret. */
+  /** The auth proxy's mcp_client_secret, sent when redeeming a login code and with every call to it; at least 32 characters. A Worker secret. */
   MCP_CLIENT_SECRET?: string;
   /**
    * When set (32+ characters), every request must carry it in X-Plivo-Edge-Secret, which the proxy in front of the
@@ -46,6 +46,20 @@ export interface Env {
 }
 
 const EDGE_SECRET_HEADER = "X-Plivo-Edge-Secret";
+// Named to end in "Key": the auth proxy's tracing redacts headers by name and that is a name it knows.
+const CLIENT_SECRET_HEADER = "X-Plivo-MCP-Client-Key";
+
+/**
+ * A fetch that shows the auth proxy this server's client secret. The proxy honours an MCP token only beside it, so a
+ * token read out of an AI app's config cannot be sent to Plivo around the approval this server asks for.
+ */
+function asThisServer(proxyBases: string[], secret: string, fetchImpl: typeof fetch = fetch): typeof fetch {
+  const origins = new Set(proxyBases.map((b) => new URL(b).origin));
+  return ((input: string, init?: RequestInit) =>
+    origins.has(new URL(input).origin)
+      ? fetchImpl(input, { ...init, headers: { ...(init?.headers as Record<string, string>), [CLIENT_SECRET_HEADER]: secret } })
+      : fetchImpl(input, init)) as typeof fetch;
+}
 
 // Compared as digests, so the time taken says nothing about the secret or its length.
 async function sameSecret(given: string, secret: string): Promise<boolean> {
@@ -137,10 +151,11 @@ function withSecurityHeaders(res: Response, policy?: string): Response {
   return out;
 }
 
-export function createWorker(fetchImpl?: typeof fetch) {
-  const tokenAccepted = createTokenCheck(fetchImpl);
+export function createWorker(plainFetch?: typeof fetch) {
+  const tokenAccepted = createTokenCheck();
   const worker = {
     async fetch(request: Request, env: Env): Promise<Response> {
+      let fetchImpl = plainFetch;
       // Trimmed: a header never carries the newline a piped `wrangler secret put` can leave on the secret.
       const expected = env.EDGE_SECRET?.trim();
       if (expected) {
@@ -183,11 +198,13 @@ export function createWorker(fetchImpl?: typeof fetch) {
       const configError =
         apiBaseError(env.PLIVO_API_BASE) ??
         (env.PLIVO_LOGIN_BASE ? apiBaseError(env.PLIVO_LOGIN_BASE, "PLIVO_LOGIN_BASE") : undefined) ??
+        (env.PLIVO_LOGIN_BASE && (env.MCP_CLIENT_SECRET ?? "").length < 32 ? "MCP_CLIENT_SECRET must be at least 32 characters" : undefined) ??
         (mode === "confirm" && (env.CONFIRM_SECRET ?? "").length < 32 ? "CONFIRM_SECRET must be at least 32 characters" : undefined) ??
         (mode === "allow" && !LOCAL_HOSTS.has(new URL(env.PLIVO_API_BASE).hostname)
           ? "CONFIRMATION_MODE=allow is only for a fake upstream on this machine"
           : undefined);
       if (configError) return misconfigured(configError);
+      if (env.PLIVO_LOGIN_BASE) fetchImpl = asThisServer([env.PLIVO_LOGIN_BASE, env.PLIVO_API_BASE], env.MCP_CLIENT_SECRET!, plainFetch);
 
       const challenge = (invalidToken = false) =>
         env.PLIVO_LOGIN_BASE
@@ -223,7 +240,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
       const tokenRefused = () => unauthorized("Plivo refused this token: it has expired or was revoked. Sign in again.", challenge(true), "invalid_token");
       // The auth proxy checks a call to one of its tools itself. Anything else would answer a made-up token.
       const proxyChecks = messages.length > 0 && messages.every((m) => m?.method === "tools/call" && !LOCAL_TOOLS.has(m.params?.name as string));
-      if (env.PLIVO_LOGIN_BASE && !proxyChecks && !(await tokenAccepted(cred, env.PLIVO_API_BASE))) return tokenRefused();
+      if (env.PLIVO_LOGIN_BASE && !proxyChecks && !(await tokenAccepted(cred, env.PLIVO_API_BASE, fetchImpl))) return tokenRefused();
       const handler = createMcpHandler((ctx) => buildServer(ctx, config));
       const res = await handler.fetch(request, { authInfo: { token: cred.authorization, clientId: "", scopes: [], extra: { credential: cred } } });
       if (!toolCall) return res;
