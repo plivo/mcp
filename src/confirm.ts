@@ -80,6 +80,8 @@ export interface Confirmer {
   code: RequestStateCodec<Pending>;
   /** Absent in local development, where there is no auth proxy to remember a spent approval. */
   approvals?: Approvals;
+  /** Told when the auth proxy refuses the caller's token, so the client is sent to sign in again. */
+  onTokenRejected?: () => void;
 }
 
 export const CODE_TTL_SECONDS = 300;
@@ -90,30 +92,36 @@ export const confirmationCodeField = z
   .optional()
   .describe("Only after a previous call returned confirmation_required and the user approved that exact action.");
 
-export function createConfirmer(secret: string, approvals?: Approvals): Confirmer {
+export function createConfirmer(secret: string, approvals?: Approvals, onTokenRejected?: () => void): Confirmer {
   // Bound to the caller's credential: one account's approval cannot authorize another's request.
   const bind = (ctx: ServerContext) => ctx.http?.authInfo?.token ?? "";
-  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals };
+  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals, onTokenRejected };
 }
 
 /**
  * Spends a verified approval, so it sends its request once however often it is presented. Any answer but a clear
  * one refuses the action: an approval that may already have been used must not run again.
  */
-async function spend(c: Confirmer, ctx: ServerContext, proof: string): Promise<Gate> {
+async function spend(c: Confirmer, ctx: ServerContext, p: Pending): Promise<Gate> {
+  const refuse = (why: string): Gate => ({ approved: false, result: textResult(why, true) });
+  if (!p.n) return refuse("This approval cannot be used. Nothing was done; call again without it and ask the user again.");
   const authorization = ctx.http?.authInfo?.token ?? "";
   if (!c.approvals || !authorization.startsWith("Bearer ")) return { approved: true };
-  const outcome = await c.approvals.consume(await approvalId(proof), authorization);
-  if (outcome === "ok" || outcome === "absent") return { approved: true };
-  return {
-    approved: false,
-    result: textResult(
-      outcome === "used"
-        ? "This approval was already used once. Nothing was done; call again without it and ask the user again."
-        : "The approval could not be recorded as used, so nothing was done. Try again shortly.",
-      true,
-    ),
-  };
+  const outcome = await c.approvals.consume(await approvalId(p.n), authorization);
+  if (outcome === "ok") return { approved: true };
+  if (outcome === "absent") {
+    console.warn("plivo-mcp: the auth proxy has no approvals endpoint (404), so this approval was not checked for reuse");
+    return { approved: true };
+  }
+  if (outcome === "rejected") {
+    c.onTokenRejected?.();
+    return refuse("Plivo refused this token: it has expired or was revoked. Nothing was done; sign in again.");
+  }
+  return refuse(
+    outcome === "used"
+      ? "This approval was already used once. Nothing was done; call again without it and ask the user again."
+      : "The approval could not be recorded as used, so nothing was done. Try again shortly.",
+  );
 }
 
 function canonical(v: unknown): string {
@@ -340,7 +348,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   }
   if (p.k !== "elicit" || p.d !== d) return { approved: false, result: textResult("The approval was for a different request. Nothing was done.", true) };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
-  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return spend(c, ctx, String(raw));
+  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return spend(c, ctx, p);
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
 }
 
@@ -370,7 +378,7 @@ export async function confirmGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.k === undefined && p.d === d) return spend(c, ctx, code);
+    if (p.k === undefined && p.d === d) return spend(c, ctx, p);
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
 

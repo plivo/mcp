@@ -1,8 +1,10 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createRequestStateCodec, type ServerContext } from "@modelcontextprotocol/server";
 import { describe, expect, it, vi } from "vitest";
 import { createWorker, type Env } from "../src/index";
 import { buildShortcuts, SHORTCUT_DEFS } from "../src/shortcuts";
 import { getOperation } from "../src/catalog";
+import { proxyApprovals } from "../src/approvals";
 import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
 import { buildRequest } from "../src/upstream";
 import catalogData from "../catalog/catalog.json";
@@ -90,6 +92,7 @@ describe("HTTP edge", () => {
     ["upstream that is not a URL", { PLIVO_API_BASE: "not a url" }],
     ["confirmation without a secret", { CONFIRM_SECRET: undefined }],
     ["confirmation with a short secret", { CONFIRM_SECRET: "short" }],
+    ["plain-http auth proxy", { PLIVO_LOGIN_BASE: "http://login.example" }],
     ["allow mode against a real upstream", { CONFIRMATION_MODE: "allow", PLIVO_API_BASE: "https://proxy.example/v1/proxy" }],
   ])(
     "refuses to serve with a %s",
@@ -646,7 +649,7 @@ describe("hardening", () => {
 const LOGIN = "http://127.0.0.1:8798";
 
 /** A Worker whose auth proxy also keeps the approvals; `consume` overrides the status it answers a spend with. */
-function setupWithProxy(consume?: () => number | Error) {
+function setupWithProxy(consume?: () => number | Error, envOverrides: Partial<Env> = {}) {
   const sent: Sent[] = [];
   const spent = new Set<string>();
   const upstream = async (url: string | URL | Request, init?: RequestInit) => {
@@ -662,9 +665,16 @@ function setupWithProxy(consume?: () => number | Error) {
     return new Response(JSON.stringify({ api_id: "x" }), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   const worker = createWorker(upstream as typeof fetch);
-  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), ...envOverrides };
   const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
   return { sent, spent, toWorker };
+}
+
+/** Other spellings of one signed approval that still verify: base64 padding, whitespace, the last character's spare bits. */
+function respelled(signed: string): string[] {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const last = alphabet[alphabet.indexOf(signed.at(-1)!) ^ 1];
+  return [`${signed}=`, `${signed}\n`, signed.slice(0, -1) + last];
 }
 
 describe("an approval is spent once", () => {
@@ -692,23 +702,86 @@ describe("an approval is spent once", () => {
     expect(writes(sent)).toHaveLength(2);
   });
 
-  it("spends an approval given in the client's own dialog too", async () => {
+  it("sends once when the same confirmation code comes back respelled", async () => {
     const { toWorker, sent } = setupWithProxy();
-    const { client } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } }, { manual: true });
-    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
-    const answered = { name: "send_sms", arguments: SMS, inputResponses: { approve: { action: "accept", content: { approve: true } } }, requestState: first.requestState };
-    const retry = () => client.callTool(answered as never) as Promise<{ isError?: boolean; content: { text: string }[] }>;
-    expect((await retry()).isError).toBeFalsy();
-    const again = await retry();
-    expect(again.isError).toBe(true);
-    expect(again.content[0].text).toContain("already used");
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    for (const variant of respelled(code)) {
+      expect((await call(client, "send_sms", { ...SMS, confirmation_code: variant })).raw).toContain("already used");
+    }
     expect(writes(sent)).toHaveLength(1);
   });
 
+  it("spends an approval given in the client's own dialog too, however its state is spelled", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const { client } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } }, { manual: true });
+    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    const retry = (requestState: string) =>
+      client.callTool({ name: "send_sms", arguments: SMS, inputResponses: { approve: { action: "accept", content: { approve: true } } }, requestState } as never) as Promise<{
+        isError?: boolean;
+        content: { text: string }[];
+      }>;
+    expect((await retry(first.requestState)).isError).toBeFalsy();
+    for (const state of [first.requestState, ...respelled(first.requestState)]) {
+      const again = await retry(state);
+      expect(again.isError).toBe(true);
+      expect(again.content[0].text).toContain("already used");
+    }
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("refuses a signed approval that carries no nonce", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const client = await connect(toWorker);
+    const shown = (await call(client, "send_sms", SMS)).parsed as { confirmation_code: string };
+    const { p } = JSON.parse(atob(shown.confirmation_code.split(".")[1].replaceAll("-", "+").replaceAll("_", "/"))) as { p: { d: string } };
+    const codec = createRequestStateCodec({ key: TEST_SECRET, ttlSeconds: CODE_TTL_SECONDS, bind: () => STK });
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: await codec.mint({ d: p.d }, {} as ServerContext) });
+    expect(res.isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("keeps no record for a Basic credential, which the auth proxy does not know", async () => {
+    const { toWorker, sent, spent } = setupWithProxy(undefined, { ALLOW_BASIC_AUTH: "true" });
+    const client = await connect(toWorker, "Basic " + btoa("MAXXXXXXXXXXXXXXXXXX:secret"));
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    expect(spent.size).toBe(0);
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("sends the client to sign in again when the auth proxy refuses the token", async () => {
+    const { toWorker, sent } = setupWithProxy(() => 401);
+    let last: Response | undefined;
+    const client = await connect(async (input, init) => (last = (await toWorker(input, init)).clone()));
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    await expect(client.callTool({ name: "send_sms", arguments: { ...SMS, confirmation_code: code } })).rejects.toThrow();
+    expect(last!.status).toBe(401);
+    expect(last!.headers.get("WWW-Authenticate")).toContain('error="invalid_token"');
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("says so in the log when a proxy without the endpoint lets an approval through unchecked", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { toWorker, sent } = setupWithProxy(() => 404);
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    expect(writes(sent)).toHaveLength(1);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("asks the auth proxy with a time limit and follows no redirect", async () => {
+    let init: RequestInit | undefined;
+    const outcome = await proxyApprovals(LOGIN, (async (_url: unknown, i?: RequestInit) => ((init = i), new Response(null, { status: 302 }))) as typeof fetch).consume("id", STK);
+    expect(outcome).toBe("failed");
+    expect(init).toMatchObject({ redirect: "manual", signal: expect.any(AbortSignal) });
+  });
+
   it.each<[string, () => number | Error, boolean]>([
-    ["a proxy without the endpoint yet (404) still sends", () => 404, true],
     ["a proxy error refuses", () => 503, false],
-    ["a rejected token refuses", () => 401, false],
     ["an unreachable proxy refuses", () => new Error("network"), false],
   ])("%s", async (_, consume, sends) => {
     const { toWorker, sent } = setupWithProxy(consume);
