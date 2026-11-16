@@ -857,6 +857,12 @@ function setupDiagnose(record: { status: number; body?: unknown }, chat: { statu
 }
 
 describe("diagnose", () => {
+  it("is not listed as read-only, since the assistant can file a support ticket", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const hints = tools.filter((t) => t.name.startsWith("diagnose_")).map((t) => t.annotations?.readOnlyHint);
+    expect(hints).toEqual([false, false]);
+  });
+
   const answered = sse(["token", { text: "Dropped by " }], ["token", { text: "the callee." }], ["final", { answer: "Dropped by the callee." }]);
   const escalation = (success?: boolean) =>
     sse(["tool_call", { name: "escalate_to_support" }], ...(success === undefined ? [] : [["tool_output", { name: "escalate_to_support", success }] as [string, unknown]]), ["final", { answer: "Raised it." }]);

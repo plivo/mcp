@@ -254,10 +254,12 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     );
   }
 
+  // Not read-only: the assistant behind them can file a support ticket, and a client may skip its prompt for a read.
+  const diagnoseAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
   for (const d of diagnoseTools) {
     server.registerTool(
       d.name,
-      { title: d.title, description: d.description, inputSchema: d.inputSchema, annotations: { readOnlyHint: true, openWorldHint: true } },
+      { title: d.title, description: d.description, inputSchema: d.inputSchema, annotations: diagnoseAnnotations },
       async (args: Record<string, string>) => {
         const res = await diagnose(d.kind, Object.values(args)[0], caller, config);
         return text(res.value, res.isError);

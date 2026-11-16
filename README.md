@@ -31,7 +31,8 @@ catalog, and the Worker refuses to start if a listed operation or param is missi
 The diagnose tools first check that the call or message is on the account, then send only its id to the auth proxy,
 which asks Plivo's support assistant a fixed question and streams the answer back (30 seconds to 2 minutes for a
 call). The assistant is told not to file a support ticket or change the account; the result says if it tried
-(`src/diagnose.ts`). They need the auth proxy, so they refuse Basic auth.
+(`src/diagnose.ts`). Because it can still file one, the tools are not marked read-only. They need the auth proxy, so
+they refuse Basic auth.
 
 ## Confirmation
 
