@@ -1,8 +1,10 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createRequestStateCodec, type ServerContext } from "@modelcontextprotocol/server";
 import { describe, expect, it, vi } from "vitest";
 import { createWorker, type Env } from "../src/index";
 import { buildShortcuts, SHORTCUT_DEFS } from "../src/shortcuts";
 import { getOperation } from "../src/catalog";
+import { proxyApprovals } from "../src/approvals";
 import { CODE_TTL_SECONDS, describeAction } from "../src/confirm";
 import { buildRequest } from "../src/upstream";
 import catalogData from "../catalog/catalog.json";
@@ -98,6 +100,7 @@ describe("HTTP edge", () => {
     ["upstream that is not a URL", { PLIVO_API_BASE: "not a url" }],
     ["confirmation without a secret", { CONFIRM_SECRET: undefined }],
     ["confirmation with a short secret", { CONFIRM_SECRET: "short" }],
+    ["plain-http auth proxy", { PLIVO_LOGIN_BASE: "http://login.example" }],
     ["allow mode against a real upstream", { CONFIRMATION_MODE: "allow", PLIVO_API_BASE: "https://proxy.example/v1/proxy" }],
   ])(
     "refuses to serve with a %s",
@@ -772,6 +775,295 @@ describe("hardening", () => {
     });
     await call(client, "get_account", {});
     expect(replies.at(-1)!.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+});
+
+const LOGIN = "http://127.0.0.1:8798";
+
+/**
+ * A Worker whose auth proxy also keeps the approvals. `consume` overrides the status it answers a spend with;
+ * `links` gives it the approval-link routes, `decide` plays the user on the console page, `answer`
+ * replaces what an approval-link route answers, and `account` names the organization the token is on.
+ */
+function setupWithProxy(
+  consume?: () => number | Error,
+  links = false,
+  answer?: (route: "create" | "redeem") => Response | undefined,
+  envOverrides: Partial<Env> = {},
+  account: () => string = () => ORG_A,
+) {
+  const sent: Sent[] = [];
+  const spent = new Set<string>();
+  const pending = new Map<string, { digest: string; action: string; status: string; auth: string | null }>();
+  const base = `${LOGIN}/v1/accounts/cli/approvals`;
+  const json = (status: number, data: unknown = {}) => new Response(JSON.stringify({ data }), { status, headers: { "Content-Type": "application/json" } });
+  const upstream = async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const auth = new Headers(init?.headers).get("Authorization");
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    if (u === `${base}/consume`) {
+      const forced = consume?.();
+      if (forced instanceof Error) throw forced;
+      const status = forced ?? (spent.has(body.id) ? 409 : 200);
+      spent.add(body.id);
+      return json(status);
+    }
+    const forced = u === base ? answer?.("create") : u.endsWith("/redeem") ? answer?.("redeem") : undefined;
+    if (forced) return forced;
+    if (u === base) {
+      if (!links) return json(404);
+      const id = `approval-${pending.size + 1}`;
+      pending.set(id, { digest: body.digest, action: body.action, status: "pending", auth });
+      return json(201, { id, url: `https://console.test/mcp/approve?id=${id}`, expires_in_seconds: 120 });
+    }
+    if (u.startsWith(`${base}/`)) {
+      const id = u.slice(base.length + 1).replace(/\/redeem$/, "");
+      const p = pending.get(id);
+      if (!p || p.digest !== body.digest || p.auth !== auth) return json(404);
+      if (p.status !== "pending") pending.delete(id);
+      return json(200, { status: p.status });
+    }
+    sent.push({ url: u, method: init?.method ?? "GET", auth, body });
+    return new Response(JSON.stringify({ api_id: "x", auth_id: account() }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const worker = createWorker(upstream as typeof fetch);
+  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), ...envOverrides };
+  const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
+  const decide = (status: "approved" | "denied") => {
+    for (const p of pending.values()) p.status = status;
+  };
+  return { sent, spent, pending, decide, toWorker };
+}
+
+/** Other spellings of one signed approval that still verify: base64 padding, whitespace, the last character's spare bits. */
+function respelled(signed: string): string[] {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const last = alphabet[alphabet.indexOf(signed.at(-1)!) ^ 1];
+  return [`${signed}=`, `${signed}\n`, signed.slice(0, -1) + last];
+}
+
+describe("an approval is spent once", () => {
+  const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
+
+  it("sends a request once however often its confirmation code comes back", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    const again = await call(client, "send_sms", { ...SMS, confirmation_code: code });
+    expect(again.isError).toBe(true);
+    expect(again.raw).toContain("already used");
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("gives two approvals of the same request different ids, so each sends once", async () => {
+    const { toWorker, sent, spent } = setupWithProxy();
+    const client = await connect(toWorker);
+    for (let i = 0; i < 2; i++) {
+      const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+      expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    }
+    expect(spent.size).toBe(2);
+    expect(writes(sent)).toHaveLength(2);
+  });
+
+  it("sends once when the same confirmation code comes back respelled", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    for (const variant of respelled(code)) {
+      expect((await call(client, "send_sms", { ...SMS, confirmation_code: variant })).raw).toContain("already used");
+    }
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("spends an approval given in the client's own dialog too, however its state is spelled", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const { client } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } }, { manual: true });
+    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    const retry = (requestState: string) =>
+      client.callTool({ name: "send_sms", arguments: SMS, inputResponses: { approve: { action: "accept", content: { approve: true } } }, requestState } as never) as Promise<{
+        isError?: boolean;
+        content: { text: string }[];
+      }>;
+    expect((await retry(first.requestState)).isError).toBeFalsy();
+    for (const state of [first.requestState, ...respelled(first.requestState)]) {
+      const again = await retry(state);
+      expect(again.isError).toBe(true);
+      expect(again.content[0].text).toContain("already used");
+    }
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("refuses a signed approval that carries no nonce", async () => {
+    const { toWorker, sent } = setupWithProxy();
+    const client = await connect(toWorker);
+    const shown = (await call(client, "send_sms", SMS)).parsed as { confirmation_code: string };
+    const { p } = JSON.parse(atob(shown.confirmation_code.split(".")[1].replaceAll("-", "+").replaceAll("_", "/"))) as { p: { d: string } };
+    const codec = createRequestStateCodec({ key: TEST_SECRET, ttlSeconds: CODE_TTL_SECONDS, bind: () => STK });
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: await codec.mint({ d: p.d }, {} as ServerContext) });
+    expect(res.isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("keeps no record for a Basic credential, which the auth proxy does not know", async () => {
+    const { toWorker, sent, spent } = setupWithProxy(undefined, false, undefined, { ALLOW_BASIC_AUTH: "true" });
+    const client = await connect(toWorker, "Basic " + btoa("MAXXXXXXXXXXXXXXXXXX:secret"));
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    expect(spent.size).toBe(0);
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("sends the client to sign in again when the auth proxy refuses the token", async () => {
+    const { toWorker, sent } = setupWithProxy(() => 401);
+    let last: Response | undefined;
+    const client = await connect(async (input, init) => (last = (await toWorker(input, init)).clone()));
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    await expect(client.callTool({ name: "send_sms", arguments: { ...SMS, confirmation_code: code } })).rejects.toThrow();
+    expect(last!.status).toBe(401);
+    expect(last!.headers.get("WWW-Authenticate")).toContain('error="invalid_token"');
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("says so in the log when a proxy without the endpoint lets an approval through unchecked", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { toWorker, sent } = setupWithProxy(() => 404);
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: code })).isError).toBe(false);
+    expect(writes(sent)).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not checked for reuse"));
+    warn.mockRestore();
+  });
+
+  it("asks the auth proxy with a time limit and follows no redirect", async () => {
+    let init: RequestInit | undefined;
+    const outcome = await proxyApprovals(LOGIN, (async (_url: unknown, i?: RequestInit) => ((init = i), new Response(null, { status: 302 }))) as typeof fetch).consume("id", STK);
+    expect(outcome).toBe("failed");
+    expect(init).toMatchObject({ redirect: "manual", signal: expect.any(AbortSignal) });
+  });
+
+  it.each<[string, () => number | Error, boolean]>([
+    ["a proxy error refuses", () => 503, false],
+    ["an unreachable proxy refuses", () => new Error("network"), false],
+  ])("%s", async (_, consume, sends) => {
+    const { toWorker, sent } = setupWithProxy(consume);
+    const client = await connect(toWorker);
+    const code = ((await call(client, "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: code });
+    expect(res.isError).toBe(!sends);
+    expect(writes(sent)).toHaveLength(sends ? 1 : 0);
+  });
+});
+
+describe("approval on a Plivo console page, for a client with no approval dialog", () => {
+  const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
+  type Asked = { status: string; action: string; approval_url: string; confirmation_code: string };
+  const ask = async (client: Client) => (await call(client, "send_sms", SMS)).parsed as Asked;
+
+  it("gives the model a link, and sends only after the user approves there", async () => {
+    const { toWorker, sent, pending, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    expect(asked).toMatchObject({ status: "approval_required", approval_url: "https://console.test/mcp/approve?id=approval-1", expires_in_seconds: 120 });
+    expect([...pending.values()][0].action).toBe(asked.action);
+    expect(asked.action).toContain('dst: "+14155550101"');
+
+    const early = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(early.isError).toBe(true);
+    expect(early.raw).toContain("has not approved");
+    expect(writes(sent)).toHaveLength(0);
+
+    decide("approved");
+    expect((await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code })).isError).toBe(false);
+    const again = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(again.raw).toContain("expired or was already used");
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("sends nothing when the user denies it", async () => {
+    const { toWorker, sent, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    decide("denied");
+    const res = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("denied");
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("does not let an approval for one request, or one caller, send another", async () => {
+    const { toWorker, sent, decide } = setupWithProxy(undefined, true);
+    const client = await connect(toWorker);
+    const asked = await ask(client);
+    decide("approved");
+    const other = await connect(toWorker, "Bearer stk_" + "b".repeat(32));
+    expect((await call(client, "send_sms", { ...SMS, text: "something else", confirmation_code: asked.confirmation_code })).isError).toBe(true);
+    expect((await call(other, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code })).isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("refuses when the approval cannot be set up, and keeps the code where the proxy has no such route", async () => {
+    const down = setupWithProxy(undefined, true);
+    const brokenFetch = async (input: string | URL | Request, init?: RequestInit) => down.toWorker(input, init);
+    down.pending.set = () => {
+      throw new Error("store down");
+    };
+    const res = await call(await connect(brokenFetch), "send_sms", SMS);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("could not be set up");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const old = setupWithProxy();
+    expect((await call(await connect(old.toWorker), "send_sms", SMS)).parsed).toMatchObject({ status: "confirmation_required" });
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("refuses an approval page that is not a web address", async () => {
+    const page = () => new Response(JSON.stringify({ data: { id: "approval-1", url: "javascript:alert(1)" } }), { status: 201 });
+    const { toWorker } = setupWithProxy(undefined, true, (route) => (route === "create" ? page() : undefined));
+    const res = await call(await connect(toWorker), "send_sms", SMS);
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain("could not be set up");
+  });
+
+  it("does not take a state signed for the client's own dialog as a confirmation code", async () => {
+    const { toWorker, sent } = setupWithProxy(undefined, true);
+    const { client: dialog } = await connectWithDialog(toWorker, { action: "decline" }, { manual: true });
+    const { requestState } = (await dialog.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    const res = await call(await connect(toWorker), "send_sms", { ...SMS, confirmation_code: requestState });
+    expect(res.isError).toBe(true);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("sends the client to sign in again when the auth proxy refuses the token on the check", async () => {
+    let status = 0;
+    const { toWorker, sent } = setupWithProxy(undefined, true, (route) => (route === "redeem" && status ? new Response("{}", { status }) : undefined));
+    let last: Response | undefined;
+    const client = await connect(async (input, init) => (last = (await toWorker(input, init)).clone()));
+    const asked = await ask(client);
+
+    status = 400;
+    const invalid = await call(client, "send_sms", { ...SMS, confirmation_code: asked.confirmation_code });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.raw).not.toContain("shortly");
+
+    status = 401;
+    await expect(client.callTool({ name: "send_sms", arguments: { ...SMS, confirmation_code: asked.confirmation_code } })).rejects.toThrow();
+    expect(last!.status).toBe(401);
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("still asks in the client's own dialog when it has one", async () => {
+    const { toWorker, sent, pending } = setupWithProxy(undefined, true);
+    const { client, asked } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } });
+    expect((await call(client, "send_sms", SMS)).isError).toBe(false);
+    expect(asked).toHaveLength(1);
+    expect(pending.size).toBe(0);
+    expect(writes(sent)).toHaveLength(1);
   });
 });
 

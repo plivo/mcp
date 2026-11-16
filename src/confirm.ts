@@ -10,6 +10,7 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import { approvalId, type Approvals } from "./approvals";
 import { getOperation, type Operation } from "./catalog";
 import { cleanName } from "./oauth";
 import type { BuiltRequest } from "./upstream";
@@ -77,16 +78,24 @@ export function approvalReasons(op: Operation): string[] {
 
 /**
  * What the user approves: one exact request (method, URL and body), by digest, on one account. `k` marks state minted
- * for an elicitation; `a` is the Auth ID the approval named, absent only in state minted before approvals carried it.
+ * for an elicitation and for an approval link, whose `a` is the approval's id at the auth proxy. `n` makes every
+ * approval distinct, so spending one cannot spend another for the same request. `o` is the Auth ID the approval named,
+ * absent only in state minted before approvals carried it.
  */
 interface Pending {
   d: string;
-  k?: "elicit";
+  k?: "elicit" | "link";
+  n?: string;
   a?: string;
+  o?: string;
 }
 
 export interface Confirmer {
   code: RequestStateCodec<Pending>;
+  /** Absent in local development, where there is no auth proxy to remember a spent approval. */
+  approvals?: Approvals;
+  /** Told when the auth proxy refuses the caller's token, so the client is sent to sign in again. */
+  onTokenRejected?: () => void;
 }
 
 export const CODE_TTL_SECONDS = 300;
@@ -95,12 +104,38 @@ export const confirmationCodeField = z
   .string()
   .max(2000)
   .optional()
-  .describe("Only after a previous call returned confirmation_required and the user approved that exact action.");
+  .describe("Only after a previous call returned approval_required or confirmation_required and the user approved that exact action.");
 
-export function createConfirmer(secret: string): Confirmer {
+export function createConfirmer(secret: string, approvals?: Approvals, onTokenRejected?: () => void): Confirmer {
   // Bound to the caller's credential: one account's approval cannot authorize another's request.
   const bind = (ctx: ServerContext) => ctx.http?.authInfo?.token ?? "";
-  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }) };
+  return { code: createRequestStateCodec<Pending>({ key: secret, ttlSeconds: CODE_TTL_SECONDS, bind }), approvals, onTokenRejected };
+}
+
+/**
+ * Spends a verified approval, so it sends its request once however often it is presented. Any answer but a clear
+ * one refuses the action: an approval that may already have been used must not run again.
+ */
+async function spend(c: Confirmer, ctx: ServerContext, p: Pending): Promise<Gate> {
+  const refuse = (why: string): Gate => ({ approved: false, result: textResult(why, true) });
+  if (!p.n) return refuse("This approval cannot be used. Nothing was done; call again without it and ask the user again.");
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  if (!c.approvals || !authorization.startsWith("Bearer ")) return { approved: true };
+  const outcome = await c.approvals.consume(await approvalId(p.n), authorization);
+  if (outcome === "ok") return { approved: true };
+  if (outcome === "absent") {
+    console.warn("plivo-mcp: the auth proxy has no approvals endpoint (404), so this approval was not checked for reuse");
+    return { approved: true };
+  }
+  if (outcome === "rejected") {
+    c.onTokenRejected?.();
+    return refuse("Plivo refused this token: it has expired or was revoked. Nothing was done; sign in again.");
+  }
+  return refuse(
+    outcome === "used"
+      ? "This approval was already used once. Nothing was done; call again without it and ask the user again."
+      : "The approval could not be recorded as used, so nothing was done. Try again shortly.",
+  );
 }
 
 function canonical(v: unknown): string {
@@ -275,8 +310,8 @@ export function nameAccount(name: unknown, authId: string): string {
 export const MOVED = "Nothing was done: this approval was shown for another organization than the one this connection is on now. Call again to ask the user again.";
 
 function wrongAccount(p: Pending, account: string): CallToolResult | undefined {
-  if (p.a === account) return undefined;
-  return textResult(p.a === undefined ? "Nothing was done: this approval was issued before an update and no longer counts. Call again to ask the user again." : MOVED, true);
+  if (p.o === account) return undefined;
+  return textResult(p.o === undefined ? "Nothing was done: this approval was issued before an update and no longer counts. Call again to ask the user again." : MOVED, true);
 }
 
 export type Gate = { approved: true } | { approved: false; result: CallToolResult | InputRequiredResult };
@@ -321,7 +356,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
       approved: false,
       result: inputRequired({
         inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n\nApprove this action?`, requestedSchema: APPROVAL_SCHEMA }) },
-        requestState: await c.code.mint({ d, k: "elicit", a: account }, ctx),
+        requestState: await c.code.mint({ d, k: "elicit", n: crypto.randomUUID(), o: account }, ctx),
       }),
     };
   }
@@ -335,8 +370,58 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   const moved = wrongAccount(p, account);
   if (moved) return { approved: false, result: moved };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
-  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return { approved: true };
+  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return spend(c, ctx, p);
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
+}
+
+const LINK_INSTRUCTIONS =
+  "Give the user approval_url and ask them to open it and approve this action there, signed in to Plivo. You cannot " +
+  "approve it yourself. After they say they approved, call the same tool again with exactly the same arguments plus " +
+  "confirmation_code.";
+
+/**
+ * For a client with no approval dialog: registers the action at the auth proxy and returns the Plivo console page
+ * where the signed-in user approves it. The model gets a link and a handle, neither of which approves anything.
+ * Undefined when there is no proxy to hold approvals, which leaves the confirmation code.
+ */
+async function askByLink(c: Confirmer, ctx: ServerContext, d: string, action: string, account: string): Promise<Gate | undefined> {
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  if (!c.approvals || !authorization.startsWith("Bearer ")) return undefined;
+  const made = await c.approvals.create(d, action, authorization);
+  if (made === "absent") {
+    console.warn("plivo-mcp: the auth proxy has no approval-link route (404 or 405), so this approval falls back to a confirmation code");
+    return undefined;
+  }
+  if (made === "failed") return { approved: false, result: textResult("The approval could not be set up, so nothing was done. Try again shortly.", true) };
+  return {
+    approved: false,
+    result: textResult({
+      status: "approval_required",
+      nothing_done_yet: true,
+      action,
+      approval_url: made.url,
+      confirmation_code: await c.code.mint({ d, k: "link", a: made.id, n: crypto.randomUUID(), o: account }, ctx),
+      expires_in_seconds: Math.min(CODE_TTL_SECONDS, made.expiresInSeconds ?? CODE_TTL_SECONDS),
+      instructions: LINK_INSTRUCTIONS,
+    }),
+  };
+}
+
+/** Asks the auth proxy what the user decided on the approval page; an approval is handed out once. */
+async function redeemLink(c: Confirmer, ctx: ServerContext, p: Pending): Promise<Gate> {
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  const outcome = c.approvals && p.a ? await c.approvals.redeem(p.a, p.d, authorization) : "failed";
+  if (outcome === "approved") return { approved: true };
+  if (outcome === "rejected") c.onTokenRejected?.();
+  const why = {
+    pending: "The user has not approved this action yet. Nothing was done; ask them to open approval_url and approve it, then call again with the same confirmation_code.",
+    denied: "Nothing was done: the user denied this action.",
+    gone: "This approval expired or was already used. Nothing was done; call again without confirmation_code and ask the user again.",
+    rejected: "Plivo refused this token: it has expired or was revoked. Nothing was done; sign in again.",
+    invalid: "This approval cannot be checked. Nothing was done; call again without confirmation_code and ask the user again.",
+    failed: "The approval could not be checked, so nothing was done. Try again shortly.",
+  }[outcome];
+  return { approved: false, result: textResult(why, true) };
 }
 
 export async function confirmGate(
@@ -355,9 +440,10 @@ export async function confirmGate(
 
 /**
  * Decides whether a request that needs approval may be sent now. A client that can show its own approval dialog is
- * asked through it; any other gets a preview and a code, and only a call carrying a fresh code, from the same caller,
- * for this exact request is sent. `account` is the Auth ID the connection is on at this call: the approval is kept
- * with it, and an answer is honoured only while it is unchanged.
+ * asked through it; any other gets a link to approve it in the Plivo console. Without an auth proxy to hold approvals
+ * (local development) it gets a preview and a code, and only a call carrying a fresh code, from the same caller, for
+ * this exact request is sent. `account` is the Auth ID the connection is on at this call: the approval is kept with
+ * it, and an answer is honoured only while it is unchanged.
  */
 export async function approvalGate(
   c: Confirmer,
@@ -388,10 +474,18 @@ export async function approvalGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.k !== undefined || p.d !== d) return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
+    // Only the two kinds minted as a code are taken here: any other signed state proves no user said yes.
+    if (p.d !== d || (p.k !== undefined && p.k !== "link")) {
+      return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
+    }
+    // Before the approval is spent or redeemed, so one shown for another organization is left untouched.
     const moved = wrongAccount(p, account);
-    return moved ? { approved: false, result: moved } : { approved: true };
+    if (moved) return { approved: false, result: moved };
+    return p.k === "link" ? redeemLink(c, ctx, p) : spend(c, ctx, p);
   }
+
+  const link = await askByLink(c, ctx, d, action, account);
+  if (link) return link;
 
   return {
     approved: false,
@@ -399,7 +493,7 @@ export async function approvalGate(
       status: "confirmation_required",
       nothing_done_yet: true,
       action,
-      confirmation_code: await c.code.mint({ d, a: account }, ctx),
+      confirmation_code: await c.code.mint({ d, n: crypto.randomUUID(), o: account }, ctx),
       expires_in_seconds: CODE_TTL_SECONDS,
       instructions:
         "Show the user this action and ask them to approve it. Only if they explicitly say yes, call the same tool " +
