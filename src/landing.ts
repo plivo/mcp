@@ -135,8 +135,9 @@ td:last-child,th:last-child{padding-right:0}
 .urlbox-label{flex:none;padding-right:14px;border-right:1px solid var(--line);font:400 11px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--subtle)}
 .urlbox code{flex:1;min-width:0;padding:0;background:none;font-size:15px;line-height:24px;font-weight:400;color:var(--strong);overflow-wrap:anywhere}
 .copy-text{position:static;flex:none;width:auto;height:36px;gap:8px;padding:0 14px;border:1px solid var(--line-strong);border-radius:2px;background:var(--bg);color:var(--strong);font:500 11px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase}
-.copy-text:hover{background:var(--code-bg);color:var(--strong)}
+.copy-text{transition:background-color .15s ease-in-out,color .15s ease-in-out,border-color .15s ease-in-out}
 .copy-text.ok{color:var(--strong)}
+.copy-text:hover,.copy-text.ok:hover{border-color:var(--cta-hover);background:var(--cta-hover);color:var(--cta-hover-text)}
 .copy-text svg{width:14px;height:14px}
 .copy-text .c2,.copy-text.ok .c1{display:none}.copy-text.ok .c2{display:inline}
 .hero .hint{margin:14px 0 0;font:400 12px/20px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--subtle)}
@@ -246,7 +247,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
   .facts .d{margin-top:10px;font-size:13px;line-height:20px}
   .prose h2{font-size:24px}
 }
-@media (prefers-reduced-motion:reduce){.ico i{animation:none}.btn,.btn-primary::after{transition:none}}
+@media (prefers-reduced-motion:reduce){.ico i{animation:none}.btn,.btn-primary::after,.copy-text{transition:none}}
 </style>
 </head>
 <body>
@@ -471,28 +472,33 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
           <tr><td><code>switch_organization</code></td><td>Moves the connection to another of those organizations. Asks first.</td></tr>
         </tbody>
       </table></div>
+      <p>A switch applies to the whole connection, so every chat in that app moves with it. An approval given before a switch does not carry over.</p>
 
       <h2 id="approvals">Approvals</h2>
-      <p>Reading is never held back. Before a change that matters, the server stops and asks for your approval. It asks when an action:</p>
+      <p>Reads run without asking, apart from two paid number lookups. Before a change that matters, the server stops and asks for your approval. It asks when an action:</p>
       <ul>
         <li><strong>costs money</strong>, such as sending a message, making a call or buying a number;</li>
         <li><strong>cannot be undone</strong>, such as releasing a number or deleting a recording;</li>
         <li><strong>keeps working after you disconnect</strong>, such as a new SIP endpoint or trunk credential;</li>
         <li><strong>changes where calls and messages go</strong>, such as an application or number setting;</li>
-        <li><strong>changes an AI agent</strong>, such as publishing or pausing it.</li>
+        <li><strong>acts on a live call</strong>, such as transferring it or pressing keypad digits;</li>
+        <li><strong>creates or changes an AI agent</strong>, such as publishing or pausing it;</li>
+        <li><strong>changes the account's own details</strong>, such as its name or address;</li>
+        <li><strong>files or changes a registration that carriers or regulators review</strong>, such as 10DLC or toll-free verification.</li>
       </ul>
-      <p>The approval shows the whole action: every field, the account that pays, its balance and, for a number, the monthly and setup price. Taxes may apply.</p>
+      <p>The approval shows the whole action: every field, the organization (account) it will run on and, when it costs money, the balance. For a number it also shows the monthly and setup price. Taxes may apply.</p>
+      <p>In an app that shows an approval dialog, such as Claude Code, you pick <strong>Approve</strong> or <strong>Deny</strong> in the app. Nothing is selected for you. In an app without one, such as Claude or ChatGPT, the tool returns a link to a Plivo Console page. Open it, sign in to the Console and approve or deny there. Only an admin of that organization can approve. Anyone else is told to ask an admin.</p>
       <div class="callout warn" role="note">
         <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M 9 6.75 v 1.5 m 0 3 h 0.0075 m -5.2035 3 h 10.392 c 1.155 0 1.8765 -1.2503 1.299 -2.25 L 10.299 3 c -0.5775 -0.9997 -2.0205 -0.9997 -2.598 0 L 2.505 12 c -0.5775 0.9997 0.144 2.25 1.299 2.25 z"/></svg>
-        <p>Read the action before you approve it. An approval covers that exact request and lasts 5 minutes. A message or call to more than 10 recipients is refused.</p>
+        <p>Read the action before you approve it. An approval covers that exact request, works once and expires after 5 minutes. A message or call to more than 10 recipients is refused.</p>
       </div>
 
       <h2 id="security">Security</h2>
       <ul>
         <li><strong>Limited access.</strong> The app gets its own token, never your Auth Token. It can use the operations above and nothing else.</li>
         <li><strong>Access expires.</strong> The token stops working after 30 days.</li>
-        <li><strong>You can remove access.</strong> Delete the <strong>Plivo MCP</strong> entry in the <a href="https://cx.plivo.com">console</a> at any time.</li>
-        <li><strong>Sub-accounts are not available.</strong> Use the console or the API for those.</li>
+        <li><strong>You can remove access.</strong> Disconnecting the server in your app ends its access if the app tells the server. Claude Code does when you clear authentication or sign in again. Other apps may not, so to be sure, delete the <strong>Plivo MCP</strong> entry in the <a href="https://cx.plivo.com">console</a>.</li>
+        <li><strong>Sub-accounts are limited.</strong> The app cannot create, manage or act as a sub-account. <code>buy_number</code> can assign a number to one, and <code>list_numbers</code> and <code>list_messages</code> can filter by one.</li>
         <li><strong>Secrets stay hidden.</strong> Passwords, tokens and keys are hidden in approval previews.</li>
         <li><strong>Checked before sending.</strong> The server refuses values that cannot be phone numbers and callback URLs that are not public <code>https</code> addresses.</li>
       </ul>
@@ -502,7 +508,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
         <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
         <tbody>
           <tr><td>The app asks you to sign in again</td><td>Your access expired after 30 days or was removed. Sign in and choose Allow again.</td></tr>
-          <tr><td>The app asks you to approve again</td><td>A new kind of access was added, such as AI agents. Approve once and carry on.</td></tr>
+          <tr><td>The app asks you to sign in again before 30 days are up</td><td>A tool needs access that was added after you signed in, such as AI agents. Sign in and choose Allow again.</td></tr>
           <tr><td>A tool is not listed</td><td>Restart the app or reconnect the server.</td></tr>
           <tr><td><code>list_calls</code> misses older calls</td><td>With no end time it searches only the last 7 days. Ask for a date range of up to 30 days within the last 90.</td></tr>
         </tbody>
