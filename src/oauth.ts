@@ -2,6 +2,8 @@
 // and authorization codes are HMAC-signed values. The login itself is Plivo's `plivo login` browser flow
 // with client=mcp, which ends in an stk_ scope token minted by the auth proxy.
 
+import { STK_RE } from "./upstream";
+
 export interface OAuthConfig {
   secret: string;
   loginBase: string;
@@ -339,26 +341,34 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
 }
 
 /**
- * RFC 7009: ends the token an app is disconnecting. Any outcome but a malformed request answers 200, as the RFC
- * asks, so a client never learns whether a token existed; a token the auth proxy could not delete still expires.
+ * RFC 7009: ends the token an app is disconnecting. A token that cannot be one of ours answers 200, as the RFC
+ * asks; one that could be answers 200 only once the auth proxy has dealt with it, so a client is never told a
+ * live token is gone.
  */
 async function revoke(request: Request, cfg: OAuthConfig): Promise<Response> {
   const raw = await readBody(request);
   if (raw === undefined) return oauthError("invalid_request", "body is too large");
   const tokenValue = new URLSearchParams(raw).get("token");
   if (!tokenValue) return oauthError("invalid_request", "token is required");
-  if (tokenValue.startsWith("stk_") && tokenValue.length <= 200) {
+  const authorization = `Bearer ${tokenValue}`;
+  if (STK_RE.test(authorization)) {
+    let status: number;
     try {
       const res = await (cfg.fetchImpl ?? fetch)(`${cfg.loginBase}/v1/accounts/cli/revoke`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${tokenValue}` },
+        headers: { Authorization: authorization },
         redirect: "manual",
         signal: AbortSignal.timeout(10_000),
       });
       await res.body?.cancel();
-      if (res.status >= 500) return oauthError("temporarily_unavailable", "Plivo could not revoke the token; try again", 503);
+      status = res.status;
     } catch {
       return oauthError("temporarily_unavailable", "Plivo sign-in is unreachable; try again", 503);
+    }
+    // The proxy answers 200 for a live, expired or unknown token alike, and 401 for one it does not take as a token.
+    if (status !== 200 && status !== 401) {
+      console.error(`plivo-mcp: the auth proxy answered ${status} to a token revocation`);
+      return oauthError("temporarily_unavailable", "Plivo could not revoke the token; try again", 503);
     }
   }
   return new Response(null, { status: 200, headers: CORS });
