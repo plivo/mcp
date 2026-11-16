@@ -905,10 +905,10 @@ describe("an approval is spent once", () => {
 
   it("spends an approval given in the client's own dialog too, however its state is spelled", async () => {
     const { toWorker, sent } = setupWithProxy();
-    const { client } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } }, { manual: true });
+    const { client } = await connectWithDialog(toWorker, APPROVED, { manual: true });
     const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
     const retry = (requestState: string) =>
-      client.callTool({ name: "send_sms", arguments: SMS, inputResponses: { approve: { action: "accept", content: { approve: true } } }, requestState } as never) as Promise<{
+      client.callTool({ name: "send_sms", arguments: SMS, inputResponses: { approve: APPROVED }, requestState } as never) as Promise<{
         isError?: boolean;
         content: { text: string }[];
       }>;
@@ -1084,7 +1084,7 @@ describe("approval on a Plivo console page, for a client with no approval dialog
 
   it("still asks in the client's own dialog when it has one", async () => {
     const { toWorker, sent, pending } = setupWithProxy(undefined, true);
-    const { client, asked } = await connectWithDialog(toWorker, { action: "accept", content: { approve: true } });
+    const { client, asked } = await connectWithDialog(toWorker, APPROVED);
     expect((await call(client, "send_sms", SMS)).isError).toBe(false);
     expect(asked).toHaveLength(1);
     expect(pending.size).toBe(0);
@@ -1093,6 +1093,7 @@ describe("approval on a Plivo console page, for a client with no approval dialog
 });
 
 type Answer = { action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> };
+const APPROVED: Answer = { action: "accept", content: { decision: "Approve" } };
 
 async function connectWithDialog(toWorker: typeof fetch, answer: Answer, opts: { legacy?: boolean; manual?: boolean } = {}) {
   const transport = new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
@@ -1118,7 +1119,6 @@ async function connectWithDialog(toWorker: typeof fetch, answer: Answer, opts: {
 
 describe("approval through the client's own dialog", () => {
   const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
-  const APPROVED: Answer = { action: "accept", content: { approve: true } };
 
   it("asks a 2026 client that can show a dialog, and sends only after the user accepts", async () => {
     const { toWorker, sent } = setup();
@@ -1132,17 +1132,40 @@ describe("approval through the client's own dialog", () => {
     expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/${ORG_A}/Message/`, method: "POST", auth: STK, body: SMS }]);
   });
 
-  it.each<[string, Answer]>([
-    ["declines", { action: "decline" }],
-    ["cancels", { action: "cancel" }],
-    ["submits without ticking approve", { action: "accept", content: { approve: false } }],
-  ])("sends nothing when the user %s", async (_, answer) => {
+  it.each<[string, Answer, string]>([
+    ["declines", { action: "decline" }, "chose to deny"],
+    ["cancels", { action: "cancel" }, "cancelled or dismissed"],
+    ["declines a form that had Approve chosen", { action: "decline", content: { decision: "Approve" } }, "chose to deny"],
+    ["cancels a form that had Approve chosen", { action: "cancel", content: { decision: "Approve" } }, "cancelled or dismissed"],
+    ["chooses Deny", { action: "accept", content: { decision: "Deny" } }, "chose to deny"],
+    ["submits without a choice", { action: "accept", content: {} }, "without choosing"],
+    ["submits with no content", { action: "accept" }, "without choosing"],
+    ["answers with the wrong type", { action: "accept", content: { decision: true } }, "without choosing"],
+    ["answers in another spelling", { action: "accept", content: { decision: "approve" } }, "without choosing"],
+    ["answers the tick box this dialog used to be", { action: "accept", content: { approve: true } }, "without choosing"],
+  ])("sends nothing when the user %s", async (_, answer, why) => {
     const { toWorker, sent } = setup();
     const { client } = await connectWithDialog(toWorker, answer);
     const res = await call(client, "send_sms", SMS);
     expect(res.isError).toBe(true);
-    expect(res.raw).toContain("did not approve");
+    expect(res.raw).toContain("Nothing was done");
+    expect(res.raw).toContain(why);
+    expect(res.raw).toContain("only if they ask");
     expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("offers Approve and Deny as a required choice with nothing chosen beforehand", async () => {
+    const { client } = await connectWithDialog(setup().toWorker, APPROVED, { manual: true });
+    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as {
+      inputRequests: { approve: { params: { message: string; requestedSchema: unknown } } };
+    };
+    const { message, requestedSchema } = first.inputRequests.approve.params;
+    expect(message.endsWith("\n\nApprove this action?")).toBe(true);
+    expect(requestedSchema).toEqual({
+      type: "object",
+      properties: { decision: { type: "string", title: "Your decision", enum: ["Approve", "Deny"] } },
+      required: ["decision"],
+    });
   });
 
   it("asks the user even when the model brings a confirmation code", async () => {
@@ -1224,7 +1247,6 @@ describe("organizations", () => {
   const LIST = `${API}/mcp/organizations`;
   const SWITCH = `${API}/mcp/organization`;
   const SWITCHED = { url: SWITCH, method: "POST", auth: STK, body: { auth_id: ORG_B } };
-  const APPROVED: Answer = { action: "accept", content: { approve: true } };
   const failed = (status: number, errors: Record<string, string>): Reply => ({ status, body: { api_id: "x", data: null, errors } });
   const FORBIDDEN = failed(403, { global_error: "Token is not authorised for this module", required_module: "account.read" });
 
