@@ -40,8 +40,11 @@ type Reply = { status: number; body: unknown; headers?: Record<string, string> }
 
 function setup(envOverrides: Partial<Env> = {}, reply: Reply | ((url: string, req: Sent) => Reply) = { status: 200, body: { api_id: "x", ok: true, auth_id: ORG_A } }) {
   const sent: Sent[] = [];
+  // Beside `sent`, not in it, so the many exact `sent` comparisons stay about the request itself.
+  const sentHeaders: Headers[] = [];
   const upstream = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
+    sentHeaders.push(headers);
     sent.push({ url: String(url), method: init?.method ?? "GET", auth: headers.get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const r = typeof reply === "function" ? reply(String(url), sent.at(-1)!) : reply;
     return new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json", ...r.headers } });
@@ -49,7 +52,7 @@ function setup(envOverrides: Partial<Env> = {}, reply: Reply | ((url: string, re
   const worker = createWorker(upstream as typeof fetch);
   const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, ...envOverrides };
   const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
-  return { worker, env, sent, toWorker };
+  return { worker, env, sent, sentHeaders, toWorker };
 }
 
 // Workers always see the client's Host header; a Request built in Node has none.
@@ -282,6 +285,57 @@ describe("a token is checked with the auth proxy before the Worker answers", () 
     const { toWorker, sent } = setup({}, REFUSED);
     expect((await rpc(toWorker, "tools/list")).status).toBe(200);
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("the auth proxy is told which app and address each call came from", () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+  const callTool = (toWorker: typeof fetch, name: string, args: unknown, headers: Record<string, string>) =>
+    toWorker("http://localhost/mcp", {
+      method: "POST",
+      headers: { Authorization: STK, "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+    });
+  const told = (h: Headers) => ({ ip: h.get("X-MCP-Client-IP"), client: h.get("X-MCP-Client"), forwarded: h.get("X-MCP-Forwarded-For") });
+  const XFF = `198.51.100.9, 203.0.113.7${", 10.0.0.1".repeat(30)}`;
+  // Node's Request refuses a header character above 0xFF, so non-Latin text arrives as its UTF-8 bytes, as on the wire.
+  const wire = (v: string) => String.fromCharCode(...new TextEncoder().encode(v));
+
+  it.each<[string, string, unknown, string[]]>([
+    ["a read", "plivo_api_read", { id: "GET /Call/" }, [PROBE, `${API}/v1/Account/me/Call/`]],
+    ["a diagnosis", "diagnose_call", { call_uuid: "c-1" }, [PROBE, `${API}/v1/Account/me/Call/c-1/`, `${API}/v1/aiassist/diagnose/call`]],
+  ])("on the token probe and every request of %s, each with its own request id", async (_, name, args, urls) => {
+    const { toWorker, sent, sentHeaders } = setup(OAUTH);
+    const from = { "CF-Connecting-IP": "203.0.113.7", "User-Agent": "claude-code/2.1.325", "X-Forwarded-For": "198.51.100.9, 203.0.113.7" };
+    await callTool(toWorker, name, args, from);
+    expect(sent.map((r) => r.url)).toEqual(urls);
+    expect(sentHeaders.map(told)).toEqual(urls.map(() => ({ ip: "203.0.113.7", client: "claude-code/2.1.325", forwarded: "198.51.100.9, 203.0.113.7" })));
+    const ids = sentHeaders.map((h) => h.get("X-Request-Id") ?? "");
+    expect(ids.filter((id) => UUID.test(id))).toHaveLength(urls.length);
+    expect(new Set(ids).size).toBe(urls.length);
+  });
+
+  it.each<[string, Record<string, string>, Partial<ReturnType<typeof told>>]>([
+    ["an IPv6 address", { "CF-Connecting-IP": "2001:db8::1" }, { ip: "2001:db8::1" }],
+    ["a list of addresses", { "CF-Connecting-IP": "203.0.113.7, 10.0.0.1" }, {}],
+    ["an IPv4 address out of range", { "CF-Connecting-IP": "203.0.113.256" }, {}],
+    ["a host name", { "CF-Connecting-IP": "localhost" }, {}],
+    ["control characters in the app name", { "User-Agent": "claude\x01-code\x7f/2.1\t(cli)\x1b" }, { client: "claude-code/2.1(cli)" }],
+    ["an app name past 200 characters", { "User-Agent": "a".repeat(300) }, { client: "a".repeat(200) }],
+    ["an app name of control characters only", { "User-Agent": "\x01\x02" }, {}],
+    ["a forwarded-for list with control characters, past 256 characters", { "X-Forwarded-For": XFF.replace(",", ",\x01") }, { forwarded: XFF.slice(0, 256) }],
+    [
+      "non-ASCII in the app name and the forwarded-for list",
+      { "User-Agent": `claude-code/2.1 é${wire("日本")}`, "X-Forwarded-For": `198.51.100.9 é${wire("日本")}` },
+      { client: "claude-code/2.1", forwarded: "198.51.100.9" },
+    ],
+    ["none of the headers", {}, {}],
+  ])("given %s", async (_, headers, want) => {
+    const { toWorker, sentHeaders } = setup();
+    const res = await callTool(toWorker, "plivo_api_read", { id: "GET /Call/" }, headers);
+    expect(await res.text()).toContain("api_id");
+    expect(sentHeaders.map(told)).toEqual([{ ip: null, client: null, forwarded: null, ...want }]);
+    expect(sentHeaders[0].get("X-Request-Id")).toMatch(UUID);
   });
 });
 

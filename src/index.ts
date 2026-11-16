@@ -11,7 +11,7 @@ import { landingPage, landingPolicy, wantsLandingPage } from "./landing";
 import { handleOAuth, insufficientScopeChallenge, OAUTH_PATHS, resourceMetadataChallenge } from "./oauth";
 import { buildServer, type ServerConfig } from "./server";
 import { createTokenCheck } from "./tokencheck";
-import { parseCredential, readCapped } from "./upstream";
+import { clientOf, parseCredential, readCapped } from "./upstream";
 
 export interface Env {
   /** The auth proxy's /v1/proxy base in production; https://api.plivo.com for local development. */
@@ -195,6 +195,7 @@ export function createWorker(fetchImpl?: typeof fetch) {
           : `Bearer realm="plivo"${invalidToken ? ', error="invalid_token"' : ""}`;
       const cred = parseCredential(request.headers.get("Authorization"), env.ALLOW_BASIC_AUTH === "true");
       if ("error" in cred) return unauthorized(cred.error, challenge());
+      Object.assign(cred, clientOf(request.headers));
 
       let tokenRejected = false;
       let scopeMissing = false;
