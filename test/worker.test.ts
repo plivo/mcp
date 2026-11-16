@@ -639,7 +639,7 @@ describe("confirmation", () => {
 
   it.each<[string, unknown, string]>([
     ["secret-named keys at any depth", { model: { api_key: "S1", auth_params: { password: "S1" } } }, '"api_key":"(hidden, 2 characters)"'],
-    ["URL credentials wherever the URL starts", { url: ` ${["https://bob", "S1"].join(":")}@hooks.example.com/x?token=S1&page=2`, alt: "https:h/?token=S1" }, "hooks.example.com/x?token=(hidden)&page=2"],
+    ["URL credentials wherever the URL starts", { url: ` ${["https://bob", "S1"].join(":")}@hooks.example.com/x?token=S1&page=2`, alt: "https:h.example/?token=S1" }, "hooks.example.com/x?token=(hidden)&page=2"],
     ["a query name with a malformed escape", { url: "https://h.example.com/?api%5fkey%FF=S1" }, "api%5fkey%FF=(hidden)"],
     ["a JSON-encoded credential field", { headers: '{"Authorization":"Bearer S1","X-Shop":"7"}' }, 'X-Shop'],
     ["a credential field mixing a secret and a template", { headers: '{"Authorization":"Bearer S1","X-ID":{{session.id}}}' }, '"headers":"(hidden, '],
@@ -1011,6 +1011,7 @@ describe("hardening", () => {
   const sms = (extra: Record<string, unknown>) => ["send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi", ...extra }] as const;
   const dial = (extra: Record<string, unknown>) =>
     ["plivo_api_write", { id: "POST /Call/", params: { from: "14155550100", to: "14155550101", answer_url: "https://example.com/a", ...extra } }] as const;
+  const message = (extra: Record<string, unknown>) => ["plivo_api_write", { id: "POST /Message/", params: { src: "+14155550100", dst: "+14155550101", ...extra } }] as const;
   const eleven = Array.from({ length: 11 }, (_, i) => `1415555${String(1000 + i)}`).join("<");
 
   it.each<[string, readonly [string, Record<string, unknown>], string]>([
@@ -1024,6 +1025,18 @@ describe("hardening", () => {
     ["an IPv6 loopback callback", sms({ url: "https://[::1]/cb" }), "not an internal address"],
     ["a v4-mapped IPv6 private address", sms({ url: "https://[::ffff:10.0.0.1]/cb" }), "not an internal address"],
     ["a single-label host", dial({ fallback_url: "https://intranet/x" }), "not an internal address"],
+    ["a 6to4 address carrying the metadata address", dial({ answer_url: "https://[2002:a9fe:a9fe::]/x" }), "not an internal address"],
+    ["a Teredo address", dial({ answer_url: "https://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/x" }), "not an internal address"],
+    ["a Teredo address spelt short", dial({ answer_url: "https://[2001::a9fe:a9fe]/x" }), "not an internal address"],
+    ["an internal URL inside a nested field", message({ interactive: { header: { media: "http://169.254.169.254/latest/meta-data/" } } }), "interactive.header.media must point at a public host"],
+    ["a nested internal URL spelt with backslashes", message({ interactive: { header: { media: "https:\\\\169.254.169.254\\x" } } }), "interactive.header.media must point at a public host"],
+    ["a nested internal URL behind a templated username", message({ interactive: { header: { media: "https://{{x}}@169.254.169.254/" } } }), "interactive.header.media must point at a public host"],
+    ["a nested internal URL with a templated port", message({ interactive: { header: { media: "https://169.254.169.254:{{port}}/" } } }), "interactive.header.media must point at a public host"],
+    ["a nested internal URL after a control character", message({ interactive: { header: { media: "\u0001http://169.254.169.254/" } } }), "interactive.header.media must point at a public host"],
+    ["a nested internal URL with an upper-case scheme", message({ interactive: { header: { media: "HTTP://127.0.0.1/" } } }), "interactive.header.media must point at a public host"],
+    ["a nested URL whose host cannot be read", message({ interactive: { header: { media: "https://[fe80::1%25eth0]/" } } }), "interactive.header.media is not a valid URL"],
+    ["an internal URL inside a template sent as JSON text", message({ template: JSON.stringify({ components: [{ parameters: [{ image: { link: "https://10.0.0.5/a.png" } }] }] }) }), "template.components[0].parameters[0].image.link must point at a public host"],
+    ["an internal URL inside an agent node", ["plivo_api_write", { id: "POST /AgentFlow/", params: { name: "a", nodes: [{ id: "n1", config: { endpoint: "https://[2002:a9fe:a9fe::]/x" } }], connections: [] } }], "nodes[0].config.endpoint must point at a public host"],
     ["a URL carrying a login", dial({ ring_url: `https://${["u", "p"].join(":")}@example.com/x` }), "must not carry a username or password"],
     ["one bad URL in a media list", sms({ media_urls: ["https://example.com/a.png", "https://localhost/b.png"] }), "media_urls must point at a public host"],
   ])("refuses %s before asking for approval", async (_, [tool, args], why) => {
@@ -1039,6 +1052,8 @@ describe("hardening", () => {
     ["ten recipients, a short-code sender and a public callback", sms({ src: "55512", dst: eleven.split("<").slice(1).join("<"), url: "https://hooks.example.com/s?x=1" })],
     ["an alphanumeric sender ID", sms({ src: "PLIVO" })],
     ["a SIP destination and a public IPv6 callback", dial({ to: "sip:alice@sip.example.com", hangup_url: "https://[2606:4700::1111]/h" })],
+    ["public and templated URLs, and text that mentions an internal one, inside nested fields", message({ text: "see http://10.0.0.1/wiki", interactive: { header: { media: "http://cdn.example.com/a.png" }, body: { text: "see http://10.0.0.1/wiki" }, action: { url: "https://{{host}}/x", fallback: "https://api.example.com:{{port}}/x" } } })],
+    ["public IPv6 addresses either side of the Teredo and 6to4 ranges", dial({ hangup_url: "https://[2001:1::1]/h", fallback_url: "https://[2003::1]/h" })],
     ["a wss stream target", ["plivo_api_write", { id: "POST /Call/{call_uuid}/Stream/", path_params: { call_uuid: "c1" }, params: { service_url: "wss://voice.example.com/s" } }]],
   ])("still asks for approval of %s", async (_, [tool, args]) => {
     const res = await call(await connect(setup().toWorker), tool, args);
