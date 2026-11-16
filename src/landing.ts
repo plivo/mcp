@@ -497,7 +497,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
       <ul>
         <li><strong>Limited access.</strong> The app gets its own token, never your Auth Token. It can use the operations above and nothing else.</li>
         <li><strong>Access expires.</strong> The token stops working after 30 days.</li>
-        <li><strong>You can remove access.</strong> There are two ways. Disconnect the server in your app: this ends its access if the app tells the server. Claude Code does when you clear authentication or sign in again; other apps may not. Or wait: access ends by itself after 30 days.</li>
+        <li><strong>You can remove access.</strong> Disconnect the server in your AI app. In Claude Code, for example, run <code>/mcp</code>, pick Plivo and choose <strong>Clear authentication</strong>, and the access ends straight away. Some apps only forget the connection on their side; the access then ends by itself after 30 days. If your <a href="https://cx.plivo.com">console</a> shows a <strong>Plivo MCP</strong> entry under API keys, deleting it also ends the access at once.</li>
         <li><strong>Sub-accounts are limited.</strong> The app cannot create, manage or act as a sub-account. <code>buy_number</code> can assign a number to one, and <code>list_numbers</code> and <code>list_messages</code> can filter by one.</li>
         <li><strong>Secrets stay hidden.</strong> Passwords, tokens and keys are hidden in approval previews.</li>
         <li><strong>Checked before sending.</strong> The server refuses values that cannot be phone numbers and callback URLs that are not public <code>https</code> addresses.</li>
