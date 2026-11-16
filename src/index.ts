@@ -38,6 +38,22 @@ export interface Env {
   OAUTH_SECRET?: string;
   /** The auth proxy's mcp_client_secret, sent when redeeming a login code; at least 32 characters. A Worker secret. */
   MCP_CLIENT_SECRET?: string;
+  /**
+   * When set (32+ characters), every request must carry it in X-Plivo-Edge-Secret, which the proxy in front of the
+   * Worker adds; the Worker's own workers.dev address then answers no one else. Unset or empty checks nothing.
+   */
+  EDGE_SECRET?: string;
+}
+
+const EDGE_SECRET_HEADER = "X-Plivo-Edge-Secret";
+
+// Compared as digests, so the time taken says nothing about the secret or its length.
+async function sameSecret(given: string, secret: string): Promise<boolean> {
+  const digest = async (s: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
+  const [a, b] = await Promise.all([digest(given), digest(secret)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
 }
 
 function confirmationMode(env: Env): ServerConfig["confirmationMode"] {
@@ -125,6 +141,12 @@ export function createWorker(fetchImpl?: typeof fetch) {
   const tokenAccepted = createTokenCheck(fetchImpl);
   const worker = {
     async fetch(request: Request, env: Env): Promise<Response> {
+      // Trimmed: a header never carries the newline a piped `wrangler secret put` can leave on the secret.
+      const expected = env.EDGE_SECRET?.trim();
+      if (expected) {
+        if (expected.length < 32) return misconfigured("EDGE_SECRET must be at least 32 characters");
+        if (!(await sameSecret(request.headers.get(EDGE_SECRET_HEADER) ?? "", expected))) return new Response("Forbidden\n", { status: 403 });
+      }
       const url = new URL(request.url);
       const originError = publicOriginError(env.PUBLIC_ORIGIN);
       if (originError) return misconfigured(originError);

@@ -103,6 +103,24 @@ Behind a proxy that forwards the Worker's own Host (CloudFront in front of the w
 to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
 cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<PUBLIC_ORIGIN>/oauth/callback`.
 
+### Closing the workers.dev address
+
+CloudFront reaches the Worker on its workers.dev name, and so can anyone else, skipping whatever CloudFront enforces.
+`EDGE_SECRET` closes that: when it is set, the Worker answers 403 to every request that does not carry the same value
+in the `X-Plivo-Edge-Secret` header, before it does anything else. Unset (or empty), nothing is checked, so the code
+is safe to deploy first. A value under 32 characters makes every request fail with 500.
+
+Roll it out in this order; step 2 before step 1 takes the server down for everyone:
+
+1. In CloudFront, add a custom header named `X-Plivo-Edge-Secret` on the Worker origin, holding a random value of
+   32+ characters, and wait until the distribution is deployed. CloudFront overwrites a header of that name sent by
+   a client.
+2. Set the same value on the Worker: `npx wrangler secret put EDGE_SECRET`.
+3. Check that `https://mcp.plivo.com/` still answers 200 and the workers.dev address answers 403.
+
+To undo, or to change the value: `npx wrangler secret delete EDGE_SECRET` first, then change CloudFront, then set the
+new value. The check is off in between.
+
 `catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
 `npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
 

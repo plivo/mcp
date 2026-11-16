@@ -114,6 +114,51 @@ describe("HTTP edge", () => {
   );
 });
 
+describe("the optional secret that only the proxy in front of the Worker knows", () => {
+  const EDGE = "edge-".padEnd(40, "e");
+  const get = (env: Partial<Env>, path: string, header?: string) =>
+    setup(env).toWorker(`http://localhost${path}`, header === undefined ? {} : { headers: { "X-Plivo-Edge-Secret": header } });
+
+  it.each(["/", "/mcp", "/register", "/.well-known/oauth-protected-resource/mcp", "/nothing-here"])("refuses %s without it, before anything else", async (path) => {
+    const { toWorker, sent } = setup({ ...OAUTH, EDGE_SECRET: EDGE });
+    const res = await toWorker(`http://localhost${path}`, { method: "POST", headers: { Authorization: STK, "Content-Type": "application/json" }, body: "{}" });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden\n");
+    expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, string]>([
+    ["a wrong value of the same length", "edge-".padEnd(40, "f")],
+    ["a prefix of it", EDGE.slice(0, 39)],
+    ["it with more after it", `${EDGE}e`],
+    ["it in another case", EDGE.toUpperCase()],
+    ["it twice", `${EDGE}, ${EDGE}`],
+    ["an empty value", ""],
+  ])("refuses %s", async (_, header) => {
+    expect((await get({ EDGE_SECRET: EDGE }, "/", header)).status).toBe(403);
+  });
+
+  it.each<[string, string]>([
+    ["", EDGE],
+    [", though the secret was stored with a trailing newline", `${EDGE}\n`],
+  ])("serves a request that carries it%s", async (_, stored) => {
+    expect((await get({ EDGE_SECRET: stored }, "/", EDGE)).status).toBe(200);
+  });
+
+  it.each<[string, Partial<Env>]>([
+    ["unset", {}],
+    ["empty", { EDGE_SECRET: "" }],
+  ])("checks nothing while it is %s, whatever the header says", async (_, env) => {
+    expect((await get(env, "/")).status).toBe(200);
+    expect((await get(env, "/", "anything")).status).toBe(200);
+  });
+
+  it("refuses to serve with one too short to be a secret, even to a request that carries it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await get({ EDGE_SECRET: "short" }, "/", "short")).status).toBe(500);
+  });
+});
+
 describe.each([
   ["2025 clients", undefined],
   ["2026-07-28 clients", { pin: "2026-07-28" as const }],
