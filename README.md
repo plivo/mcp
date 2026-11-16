@@ -38,6 +38,12 @@ call). The assistant is told not to file a support ticket or change the account;
 (`src/diagnose.ts`). Because it can still file one, the tools are not marked read-only. They need the auth proxy, so
 they refuse Basic auth.
 
+Every reply from Plivo has its credential fields replaced with `[hidden]` before the model sees it, at any depth and
+on reads and writes alike (`hideSecrets` in `src/upstream.ts`): a field named like a password, secret, token, API
+key, authorization or cookie. An endpoint read, for one, returns the SIP password. Paging cursors (`next_page_token`)
+and numbers stay. Reads that return text from outside the account (messages, calls, caller names, AI agents and their
+runs) carry a `note` telling the model to treat that text as data (`UNTRUSTED_NOTE` in `src/server.ts`).
+
 ## Confirmation
 
 Calls that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's

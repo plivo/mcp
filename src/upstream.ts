@@ -119,6 +119,39 @@ export interface UpstreamResult {
   scopeMissing?: boolean;
 }
 
+export const SECRET_KEY = new RegExp(["token", "password", "secret", "api[_-]?key", "authorization", "cookie"].join("|"), "iu");
+// A cursor the model must send back to read the next page.
+const CURSOR_KEY = /page[_-]?token$/iu;
+const HIDDEN = "[hidden]";
+const MAX_DEPTH = 50;
+const TEXT_FIELD = /"((?:[^"\\]|\\.)*)"(\s*:\s*)"(?:[^"\\]|\\.)*"?/gu;
+
+const holdsSecret = (key: string) => SECRET_KEY.test(key) && !CURSOR_KEY.test(key);
+
+/**
+ * A reply with its credential fields blanked at any depth: an endpoint read returns the SIP password. Numbers stay,
+ * as in `prompt_tokens: 12`. Text that looks like JSON is searched too, even when a clipped body no longer parses.
+ */
+export function hideSecrets(v: unknown, secret = false, depth = 0): unknown {
+  if (depth > MAX_DEPTH) return HIDDEN;
+  if (Array.isArray(v)) return v.map((x) => hideSecrets(x, secret, depth + 1));
+  if (v !== null && typeof v === "object") {
+    // fromEntries defines "__proto__" as a field; assignment would drop it.
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, hideSecrets(x, secret || holdsSecret(k), depth + 1)]));
+  }
+  if (typeof v !== "string" || !v) return v;
+  if (secret) return HIDDEN;
+  if (!/^\s*[[{]/u.test(v)) return v;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(v);
+  } catch {
+    return v.replace(TEXT_FIELD, (all, key: string, colon: string) => (holdsSecret(key) ? `"${key}"${colon}"${HIDDEN}"` : all));
+  }
+  const shown = JSON.stringify(hideSecrets(parsed, false, depth + 1));
+  return shown === JSON.stringify(parsed) ? v : shown;
+}
+
 const TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -153,7 +186,7 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
   // The proxy names the missing module under errors.required_module; Plivo's own 403s use `error` and never carry it.
   const scopeMissing = res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
-  return { status: res.status, ok: res.ok, body, ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
+  return { status: res.status, ok: res.ok, body: hideSecrets(body), ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
 }
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */

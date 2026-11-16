@@ -13,7 +13,7 @@ import * as z from "zod/v4";
 import { approvalId, type Approvals } from "./approvals";
 import { getOperation, type Operation } from "./catalog";
 import { cleanName } from "./oauth";
-import type { BuiltRequest } from "./upstream";
+import { SECRET_KEY, type BuiltRequest } from "./upstream";
 
 const KEEPS_ACCESS = "This creates or changes a way to place calls on this account, and it keeps working after this app is disconnected.";
 const REROUTES = "This changes where this account's calls or messages are sent.";
@@ -162,7 +162,6 @@ const PLAIN_KEY = /^[A-Za-z0-9_.[\]-]+$/;
 // (usecases/agent_management.py): secret-named fields at any depth, JSON-encoded credential fields and URL
 // credentials. Like the CLI, it never prints a password back. Only fields that hold credentials are hidden:
 // hiding words in free text would let a crafted value hide itself from the user.
-const SECRET_KEY = new RegExp(["token", "password", "secret", "api[_-]?key", "authorization", "cookie"].join("|"), "iu");
 const JSON_SECRET_FIELDS = new Set(["headers", "params", "body", "auth_params", "http_headers", "http_params", "http_body_template"]);
 const WHOLE_TEMPLATE = /^\{\{[^{}]*\}\}$/;
 const URL_LIKE = /[a-z][a-z0-9+.-]*:[^\s"'<>`]+/giu;
