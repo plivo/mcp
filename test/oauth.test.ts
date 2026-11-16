@@ -351,8 +351,9 @@ describe("redirect URI schemes", () => {
     "file:///etc/hosts",
     "wss://claude.ai/cb",
     "intent://scan/#Intent;scheme=zxing;end",
+    ...["wyciwyg", "chrome-search", "isolated-app", "feed", "pcast", "ipp", "ipps", "gemini", "opera", "brave", "firefox", "skype", "x-callback-url", "web+mcp"].map((scheme) => `${scheme}://claude.ai/cb`),
   ])("refuses to register %s, which a browser or the system handles itself", (uri) => {
-    expect(redirectUriError(uri)).toMatch(/^(cannot use [a-z-]+:|must not have a fragment)$/);
+    expect(redirectUriError(uri)).toMatch(/^(cannot use [a-z+-]+:|must not have a fragment)$/);
   });
 
   it.each(["vscode://vscode.github-authentication/did-authenticate", "vscode-insiders://oauth/callback", "com.example.app:/oauth2redirect", "https://chatgpt.com/connector_platform_oauth_redirect", "http://localhost:33418/callback"])(
@@ -423,6 +424,35 @@ describe("several sign-ins in one browser", () => {
     const res = await finish(t, second, [swapped]);
     expect(first).not.toBe(second);
     expect(res.status).toBe(400);
+  });
+
+  it("expires the cookie of the earlier single-login scheme when a browser still sends it", async () => {
+    const t = setup();
+    const jar = ["plivo_mcp_login=old"];
+    await start(t, await registerClient(t.send), jar);
+    expect(jar).toEqual([expect.stringMatching(/^plivo_mcp_login_[\w-]{16}=/)]);
+  });
+
+  it("keeps the login cookies of the largest allowed sign-ins under 6 KB together", async () => {
+    const t = setup();
+    const uri = `https://claude.ai/${"c".repeat(512 - "https://claude.ai/".length)}`;
+    const reg = await t.send("/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redirect_uris: [uri], client_name: "N".repeat(100) }) });
+    const { client_id } = (await reg.json()) as { client_id: string };
+    const q = new URLSearchParams({ response_type: "code", client_id, redirect_uri: uri, state: "s".repeat(512), code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" });
+    const jar: string[] = [];
+    let largest = 0;
+    for (let i = 0; i < 7; i++) {
+      const auth = await t.send(`/authorize?${q}`, { headers: { Cookie: jar.join("; ") } });
+      for (const c of auth.headers.getSetCookie()) {
+        const pair = c.split(";")[0];
+        const at = jar.findIndex((j) => j.startsWith(`${pair.split("=")[0]}=`));
+        if (at >= 0) jar.splice(at, 1);
+        if (!c.includes("Max-Age=0")) jar.push(pair);
+      }
+      largest = Math.max(largest, jar.join("; ").length);
+    }
+    expect(largest).toBeLessThanOrEqual(6_000);
+    expect(jar).toHaveLength(2);
   });
 
   it("keeps at most 5 logins in progress, dropping the oldest, so the Cookie header stays small", async () => {

@@ -44,14 +44,17 @@ const SYSTEM_SCHEMES = new Set(
     "devtools edge moz-extension safari-extension safari-web-extension resource jar res mhtml mk cid mid urn tag mailto tel sms smsto " +
     "mms mmsto sip sips callto facetime facetime-audio facetime-group imessage xmpp irc ircs news nntp snews webcal geo maps ssh " +
     "telnet ldap ldaps smb nfs afp vnc rdp git svn dav davs shell search-ms intent market android-app content itms itms-apps " +
-    "itms-appss itms-services itms-books prefs app-settings shortcuts applescript help x-man-page man magnet bitcoin gopher rtsp rtmp"
+    "itms-appss itms-services itms-books prefs app-settings shortcuts applescript help x-man-page man magnet bitcoin gopher rtsp rtmp " +
+    "wyciwyg chrome-search isolated-app feed pcast ipp ipps gemini opera brave firefox skype x-callback-url"
   ).split(" "),
 );
-const SYSTEM_SCHEME_PREFIX = /^(ms-|x-apple|microsoft-edge)/;
+const SYSTEM_SCHEME_PREFIX = /^(ms-|x-apple|microsoft-edge|web\+)/;
 // An opaque host may hold brackets and other characters that would read as part of the consent label.
 const APP_HOST = /^[a-z0-9._-]*(:\d+)?$/i;
-// Typical login cookies are under 1 KB each; CloudFront refuses a request whose headers pass 20 KB.
 const MAX_LOGINS_IN_PROGRESS = 5;
+// One login cookie is about 0.6 KB, and up to 3 KB with the longest redirect URI and state; 8 KB is a common limit
+// for all of a request's headers.
+const MAX_LOGIN_COOKIE_BYTES = 6_000;
 
 const enc = new TextEncoder();
 
@@ -212,9 +215,9 @@ function cookies(request: Request): [string, string][] {
 }
 
 // Lax, so the cookie still arrives when the Console redirects the browser back here.
-function loginCookie(origin: URL, loginState: string, value: string, maxAge: number): string {
+function loginCookie(origin: URL, name: string, value: string, maxAge: number): string {
   const secure = origin.protocol === "https:" ? "; Secure" : "";
-  return `${loginCookieName(origin, loginState)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
 /**
@@ -294,6 +297,8 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
   const loginState = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const login: Login = { client_id: clientId, redirect_uri: redirectUri, state, code_challenge: challenge, login_state: loginState, exp: now() + LOGIN_TTL_SECONDS };
   const device = consentLabel(client.client_name, redirectUri);
+  const cookieName = loginCookieName(origin, loginState);
+  const sealed = await seal(cfg.secret, "login", login);
   return redirectTo(
     `${cfg.loginBase}/v1/accounts/cli/authorize`,
     {
@@ -303,15 +308,25 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
       code_challenge_method: "S256",
       device,
     },
-    [loginCookie(origin, loginState, await seal(cfg.secret, "login", login), LOGIN_TTL_SECONDS), ...staleLogins(request, origin)],
+    [loginCookie(origin, cookieName, sealed, LOGIN_TTL_SECONDS), ...staleLogins(request, origin, cookieName.length + sealed.length + 1)],
   );
 }
 
-/** Expires all but the newest logins in progress; a browser sends its oldest cookies first. */
-function staleLogins(request: Request, origin: URL): string[] {
+/**
+ * Expires the logins in progress that would take the browser past 5 cookies or past the byte limit with the new one,
+ * oldest first (a browser sends its oldest cookies first), and the cookie of the earlier single-login scheme.
+ */
+function staleLogins(request: Request, origin: URL, newBytes: number): string[] {
   const prefix = loginCookieName(origin, "");
-  const names = cookies(request).map(([k]) => k).filter((k) => /^[\w-]+$/.test(k) && k.startsWith(prefix));
-  return names.slice(0, Math.max(0, names.length - (MAX_LOGINS_IN_PROGRESS - 1))).map((k) => loginCookie(origin, k.slice(prefix.length), "", 0));
+  const sent = cookies(request).filter(([k]) => /^[\w-]+$/.test(k));
+  const stale = sent.filter(([k]) => k === prefix.slice(0, -1)).map(([k]) => k);
+  let room = MAX_LOGIN_COOKIE_BYTES - newBytes;
+  let kept = 1;
+  for (const [k, v] of sent.filter(([k]) => k.startsWith(prefix)).reverse()) {
+    room -= k.length + v.length + 3;
+    if (room < 0 || ++kept > MAX_LOGINS_IN_PROGRESS) stale.push(k);
+  }
+  return stale.map((k) => loginCookie(origin, k, "", 0));
 }
 
 async function callback(request: Request, origin: URL, cfg: OAuthConfig): Promise<Response> {
@@ -322,7 +337,7 @@ async function callback(request: Request, origin: URL, cfg: OAuthConfig): Promis
   if (!login || login.login_state !== state) {
     return errorPage("this sign-in link has expired or was opened in another browser. Start again from your MCP client.");
   }
-  const clear = [loginCookie(origin, state, "", 0)];
+  const clear = [loginCookie(origin, loginCookieName(origin, state), "", 0)];
   const loginCode = q.get("code");
   if (!loginCode) {
     const error = q.get("error") === "access_denied" ? "access_denied" : "server_error";

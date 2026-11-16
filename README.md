@@ -95,7 +95,7 @@ A redirect URI may be `https`, `http` on a loopback address, or an app's own sch
 `chrome-extension` and the like) are refused at `/register`, and again at `/authorize` for a client id issued before
 the rule. The consent screen names the redirect host first; for an app scheme it reads `cursor: app link to <host>`,
 so an app link can never look like a website. Each login in progress has its own cookie, so several sign-ins can run
-in one browser; at most 5 are kept, and each lasts 10 minutes.
+in one browser; at most 5 are kept (fewer when their cookies would pass 6 KB together), and each lasts 10 minutes.
 
 Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth proxy's `mcp_client_secret`
 (32+ characters), so only this Worker can turn an MCP login into a token. When the auth proxy refuses a token that
