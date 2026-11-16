@@ -20,7 +20,8 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `plivo_api_read` | Call a `GET` operation |
 | `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
-| `switch_organization` | List the organizations the connection may use, or move it to another one |
+| `list_organizations` | List the organizations the connection may use and which one is current |
+| `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
 `get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
@@ -53,10 +54,11 @@ cannot say which account the connection is on, nothing is asked or sent.
 
 A user who belongs to several organizations ticks, at sign-in, the ones the connection may use. The token starts on
 the sign-in organization, and the auth proxy runs every call on the token's current organization, so the other tools
-take no organization parameter. `switch_organization` with no arguments lists the allowed organizations
-(`GET /v1/proxy/mcp/organizations`); with `organization` (an Auth ID from that list) it asks the user, naming both
+take no organization parameter. `list_organizations` lists the allowed organizations
+(`GET /v1/proxy/mcp/organizations`). `switch_organization` takes an Auth ID from that list, asks the user, naming both
 organizations, and then moves the token (`POST /v1/proxy/mcp/organization`). The Worker keeps nothing: it reads the
-current organization from the proxy on each call.
+current organization from the proxy on each call. A switch applies to calls made after it returns, so a call sent
+alongside it may run on either organization.
 
 A switch between an approval's question and its answer voids that approval. An organization outside the list is a
 plain tool error; changing the list takes a new sign-in. A switch code is reusable until it expires like any other

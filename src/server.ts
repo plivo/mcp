@@ -7,7 +7,7 @@ import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
 import { listOrganizations, NOT_ALLOWED, switchOrganization, switchRequest, type OrgFailure } from "./organizations";
-import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential } from "./upstream";
+import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential, type UpstreamResult } from "./upstream";
 import { inputError } from "./validate";
 
 export interface ServerConfig {
@@ -75,8 +75,12 @@ const PRICE = /^\d+(\.\d+)?$/;
 // Short, so a slow lookup refuses quickly instead of adding its wait to the action's own.
 const LOOKUP_TIMEOUT_MS = 5_000;
 
-// The auth proxy's refusal of a path whose Auth ID is not the token's current organization.
-const OTHER_ACCOUNT = "Token cannot operate on a different account";
+// The auth proxy's refusal of a path whose Auth ID is not the token's current organization: by code, or by text from a
+// proxy that predates the code.
+function otherAccount(res: UpstreamResult): boolean {
+  const errors = (res.body as { errors?: { error?: unknown; global_error?: unknown } } | null)?.errors;
+  return res.status === 403 && (errors?.error === "account_mismatch" || errors?.global_error === "Token cannot operate on a different account");
+}
 
 /**
  * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
@@ -147,7 +151,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "calls, error codes, setup guides), use search_docs. Actions that cost money, cannot be undone, give lasting " +
         "access to the account, change where calls and messages go or change a live AI agent need the user's approval; " +
         "never approve one on the user's behalf. Every call runs on the connection's current organization; " +
-        "switch_organization shows it and changes it.",
+        "list_organizations shows it and switch_organization changes it.",
     },
   );
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
@@ -194,9 +198,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     }
     if (res.tokenRejected) config.onTokenRejected?.();
     if (res.scopeMissing) config.onScopeMissing?.();
-    if (send !== req && res.status === 403 && (res.body as { errors?: { global_error?: unknown } } | null)?.errors?.global_error === OTHER_ACCOUNT) {
-      return text(MOVED, true);
-    }
+    if (send !== req && otherAccount(res)) return text(MOVED, true);
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     if (op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time"))) result.note = CALL_WINDOW_NOTE;
@@ -284,17 +286,16 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     async (args, reqCtx) => call("write", args, reqCtx),
   );
 
-  async function organizations(args: { organization?: string; confirmation_code?: string }, reqCtx: ServerContext) {
+  const orgFailed = (f: OrgFailure) => {
+    if (f.tokenRejected) config.onTokenRejected?.();
+    return text(f.error, true);
+  };
+
+  async function switchTo(args: { organization: string; confirmation_code?: string }, reqCtx: ServerContext) {
     if (!caller) return text("This request has no Plivo credentials.", true);
-    const failed = (f: OrgFailure) => {
-      if (f.tokenRejected) config.onTokenRejected?.();
-      return text(f.error, true);
-    };
     // Read on every call: it names the target for the question, and says where the connection is when the answer comes.
     const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
-    if ("error" in listed) return failed(listed);
-    if (args.organization === undefined) return text(listed);
-
+    if ("error" in listed) return orgFailed(listed);
     const from = listed.organizations.find((o) => o.current);
     const to = listed.organizations.find((o) => o.auth_id === args.organization);
     if (!to) return text(NOT_ALLOWED, true);
@@ -315,24 +316,37 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       if (!gate.approved) return gate.result;
     }
     const done = await switchOrganization(req, caller, config.fetchImpl);
-    if ("error" in done) return failed(done);
+    if ("error" in done) return orgFailed(done);
     return text({ status: "switched", organization: done, note: "Every later call on this connection runs on this organization." });
   }
+
+  server.registerTool(
+    "list_organizations",
+    {
+      title: "List organizations",
+      description: "List the organizations this connection may use and which one is current.",
+      inputSchema: z.strictObject({}),
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async () => {
+      if (!caller) return text("This request has no Plivo credentials.", true);
+      const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
+      return "error" in listed ? orgFailed(listed) : text(listed);
+    },
+  );
 
   server.registerTool(
     "switch_organization",
     {
       title: "Switch organization",
-      description:
-        "With no arguments, list the organizations this connection may use and which one is current. With organization, " +
-        "move the connection to it, so every later call runs there; this needs the user's approval. Switch only when the user asks.",
+      description: "Move this connection to another of its organizations, so every later call runs there. Needs the user's approval; switch only when the user asks.",
       inputSchema: z.strictObject({
-        organization: z.string().regex(AUTH_ID_RE).optional().describe("Auth ID of the organization to switch to, from this tool's list."),
+        organization: z.string().regex(AUTH_ID_RE).describe("Auth ID of the organization to switch to, from list_organizations."),
         confirmation_code: confirmationCodeField,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
-    async (args, reqCtx) => organizations(args, reqCtx),
+    async (args, reqCtx) => switchTo(args, reqCtx),
   );
 
   for (const s of shortcuts) {

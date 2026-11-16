@@ -15,11 +15,13 @@ export interface OrgFailure {
 
 const record = (v: unknown): Record<string, unknown> => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
+const REGION_RE = /^[a-z0-9-]{1,32}$/;
+
 function organization(v: unknown, current = false): Organization | undefined {
   const o = record(v);
   if (typeof o.auth_id !== "string" || !AUTH_ID_RE.test(o.auth_id)) return undefined;
   // The name is chosen by whoever administers that organization, and ends up in approvals and in front of the model.
-  return { auth_id: o.auth_id, name: cleanName(o.name), ...(typeof o.region === "string" ? { region: o.region } : {}), current };
+  return { auth_id: o.auth_id, name: cleanName(o.name), ...(typeof o.region === "string" && REGION_RE.test(o.region) ? { region: o.region } : {}), current };
 }
 
 const route = (apiBase: string, name: string) => `${apiBase.replace(/\/+$/, "")}/mcp/${name}`;
@@ -58,7 +60,7 @@ export async function listOrganizations(
   return { organizations: raw.flatMap((v) => organization(v, record(v).current === true) ?? []) };
 }
 
-const UNCONFIRMED = "The switch could not be confirmed. Call switch_organization with no arguments to see which organization this connection is on.";
+const UNCONFIRMED = "The switch could not be confirmed. Call list_organizations to see which organization this connection is on.";
 
 export async function switchOrganization(req: BuiltRequest, cred: Credential, fetchImpl?: typeof fetch): Promise<Organization | OrgFailure> {
   let res: UpstreamResult;
