@@ -331,13 +331,30 @@ function preview(op: Operation, req: BuiltRequest, extra: string[]): { action: s
   }
 }
 
-
 const APPROVE_KEY = "approve";
+const DECISION = "decision";
+const APPROVE = "Approve";
+const DENY = "Deny";
+// A plain enum is the oldest single-choice form in the elicitation spec, so the most clients render it (titled oneOf
+// options came later). Required with no default, so a form submitted untouched carries no decision.
 const APPROVAL_SCHEMA = {
   type: "object" as const,
-  properties: { approve: { type: "boolean" as const, title: "Approve this action", default: false } },
-  required: ["approve"],
+  properties: { [DECISION]: { type: "string" as const, title: "Your decision", enum: [APPROVE, DENY] } },
+  required: [DECISION],
 };
+
+const ASK_USER = "Tell the user, and call again only if they ask for it.";
+
+function notApproved(answer: ReturnType<typeof inputResponse>): string {
+  if (answer.kind !== "elicit") return `Nothing was done: the approval dialog returned no answer. ${ASK_USER}`;
+  const denied = answer.action === "decline" || (answer.action === "accept" && answer.content?.[DECISION] === DENY);
+  if (denied) return `Nothing was done: the user chose to deny this action. ${ASK_USER}`;
+  if (answer.action === "cancel") return `Nothing was done: the approval dialog was cancelled or dismissed without a decision. ${ASK_USER}`;
+  return (
+    `Nothing was done: the approval dialog was submitted without choosing ${APPROVE} or ${DENY}, which does not approve. ` +
+    `Tell the user that approving means selecting ${APPROVE} in the dialog before submitting it, and call again only if they ask for it.`
+  );
+}
 
 /** Form-mode elicitation, declared on this 2026-07-28 request; a 2025-era request carries no envelope. */
 export function canElicit(ctx: ServerContext): boolean {
@@ -371,8 +388,8 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   const moved = wrongAccount(p, account);
   if (moved) return { approved: false, result: moved };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
-  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.approve === true) return spend(c, ctx, p);
-  return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
+  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.[DECISION] === APPROVE) return spend(c, ctx, p);
+  return { approved: false, result: textResult(notApproved(answer), true) };
 }
 
 const LINK_INSTRUCTIONS =
