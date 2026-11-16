@@ -1,6 +1,6 @@
 import * as z from "zod/v4";
-import { getOperation } from "./catalog";
 import { notGranted, notGrantedModule } from "./permissions";
+import { getOperation } from "./catalog";
 import { buildRequest, callUpstream, readCapped, type Credential } from "./upstream";
 
 // The assistant does live log lookups: 30 s to 2 min for a call.
