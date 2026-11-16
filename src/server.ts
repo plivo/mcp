@@ -8,6 +8,7 @@ import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
 import { listOrganizations, NOT_ALLOWED, switchOrganization, switchRequest, type OrgFailure } from "./organizations";
+import { describePermissions, notGranted, permits } from "./permissions";
 import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential, type UpstreamResult } from "./upstream";
 import { inputError } from "./validate";
 
@@ -118,6 +119,7 @@ function otherAccount(res: UpstreamResult): boolean {
  * The account an approval is for, read on both calls: `id` is what the approval is bound to, `lines` what the question
  * shows (with the cost, for a paid action). `unknown` when Plivo cannot say which account the connection is on, so
  * nothing can be asked or sent. Plivo shows tax only on the invoice, so the preview always says it may apply.
+ * `notGranted` when the user left this action's permission off at sign-in, so they are not asked to approve it.
  */
 async function approvalAccount(
   op: Operation,
@@ -125,7 +127,7 @@ async function approvalAccount(
   caller: Credential,
   config: ServerConfig,
   asking: boolean,
-): Promise<{ id: string; lines: string[] } | { unknown: true }> {
+): Promise<{ id: string; lines: string[] } | { unknown: true } | { notGranted: string }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
@@ -149,12 +151,15 @@ async function approvalAccount(
     return PRICE.test(monthly) && PRICE.test(setup) ? `Price: $${monthly} a month and $${setup} setup.` : undefined;
   };
   const buying = asking && op.id === "POST /PhoneNumber/{number}/";
-  const [account, price] = await Promise.all([get("GET /", {}), buying ? numberPrice() : undefined]);
+  const organizations = () => listOrganizations(caller, config.apiBase, config.fetchImpl, LOOKUP_TIMEOUT_MS);
+  // Only the question needs the permissions, and the auth proxy checks the action itself: a failed read changes nothing.
+  const [account, price, early] = await Promise.all([get("GET /", {}), buying ? numberPrice() : undefined, asking ? organizations() : undefined]);
+  if (early && !("error" in early) && !permits(early.permissions, op.module)) return { notGranted: op.module };
   let id = typeof account?.auth_id === "string" && AUTH_ID_RE.test(account.auth_id) ? account.auth_id : undefined;
   let name = account?.name;
   if (!id) {
     // A token without the account permission can still be on any of its organizations; this route needs no permission.
-    const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl, LOOKUP_TIMEOUT_MS);
+    const listed = early ?? (await organizations());
     const current = "error" in listed ? undefined : listed.organizations.find((o) => o.current);
     if (!current) return { unknown: true };
     id = current.auth_id;
@@ -213,6 +218,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       // A dialog client is asked whatever code the model brings, so that code must not empty the question.
       const asking = reqCtx.mcpReq.requestState() === undefined && (args.confirmation_code === undefined || canElicit(reqCtx));
       const account = await approvalAccount(op, args, caller, config, asking);
+      if ("notGranted" in account) return text(notGranted(account.notGranted), true);
       if ("unknown" in account) {
         return text("Nothing was done: Plivo could not say which organization this connection is on, so this action cannot be approved now. Try again.", true);
       }
@@ -232,6 +238,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     }
     if (res.tokenRejected) config.onTokenRejected?.();
     if (res.scopeMissing) config.onScopeMissing?.();
+    if (res.notGranted !== undefined) return text(notGranted(res.notGranted), true);
     if (send !== req && otherAccount(res)) return text(MOVED, true);
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
@@ -370,7 +377,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     async () => {
       if (!caller) return text("This request has no Plivo credentials.", true);
       const listed = await listOrganizations(caller, config.apiBase, config.fetchImpl);
-      return "error" in listed ? orgFailed(listed) : text(listed);
+      if ("error" in listed) return orgFailed(listed);
+      return text({ organizations: listed.organizations, ...(listed.permissions ? { permissions: describePermissions(listed.permissions) } : {}) });
     },
   );
 
