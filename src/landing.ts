@@ -423,7 +423,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
       <p>It also covers Audio Streaming, number masking, 10DLC and toll-free verification.</p>
 
       <h2 id="tools">Tools</h2>
-      <p>Your app gets 20 tools: four universal tools that reach every operation, <code>search_docs</code>, 11 shortcuts that do the common tasks in one step, two diagnose tools and two organization tools.</p>
+      <p>Your app gets 20 tools: four universal tools that reach every operation, <code>search_docs</code>, 13 shortcuts that do the common tasks in one step, and two diagnose tools.</p>
 
       <h3 id="universal-tools">Universal tools</h3>
       <div class="tw"><table class="stack">
@@ -452,8 +452,11 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
           <tr><td><code>get_call</code></td><td>Shows the record of one call.</td></tr>
           <tr><td><code>make_call</code></td><td>Starts an outbound call. Asks first.</td></tr>
           <tr><td><code>hangup_call</code></td><td>Hangs up a live call. Asks first.</td></tr>
+          <tr><td><code>list_organizations</code></td><td>Lists the organizations this connection can use and which one is current.</td></tr>
+          <tr><td><code>switch_organization</code></td><td>Moves the connection to another of those organizations. Asks first.</td></tr>
         </tbody>
       </table></div>
+      <p>A switch applies to the whole connection, so every chat in that app moves with it. An approval given before a switch does not carry over.</p>
 
       <h3 id="diagnose-tools">Diagnose</h3>
       <div class="tw"><table class="stack">
@@ -463,16 +466,6 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
           <tr><td><code>diagnose_message</code></td><td>Asks Plivo's support assistant why a message failed or what its status means.</td></tr>
         </tbody>
       </table></div>
-
-      <h3 id="organization-tools">Organizations</h3>
-      <div class="tw"><table class="stack">
-        <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
-        <tbody>
-          <tr><td><code>list_organizations</code></td><td>Lists the organizations this connection can use and which one is current.</td></tr>
-          <tr><td><code>switch_organization</code></td><td>Moves the connection to another of those organizations. Asks first.</td></tr>
-        </tbody>
-      </table></div>
-      <p>A switch applies to the whole connection, so every chat in that app moves with it. An approval given before a switch does not carry over.</p>
 
       <h2 id="approvals">Approvals</h2>
       <p>Reads run without asking, apart from two paid number lookups. Before a change that matters, the server stops and asks for your approval. It asks when an action:</p>
