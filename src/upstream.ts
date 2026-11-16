@@ -123,34 +123,60 @@ export const SECRET_KEY = new RegExp(
   ["token", "password", "passwd", "pwd", "passphrase", "secret", "api[_-]?key", "private[_-]?key", "authorization", "bearer", "jwt", "cookie"].join("|"),
   "iu",
 );
-// A cursor the model must send back to read the next page.
-const CURSOR_KEY = /page[_-]?token$/iu;
-// A count, as in `prompt_tokens: 12`.
+// Plivo's agent API returns a stored secret as this, and keeps that secret when it is sent back.
+export const KEPT_PLACEHOLDER = `${"*".repeat(3)}REDACTED${"*".repeat(3)}`;
+export const HIDDEN = "[hidden]";
+const PIN_KEY = /(^|[_-])pin$/iu;
+// A number under one of these can be the credential itself; under `token` it is a count or a lifetime.
+const NUMBER_KEYS = new RegExp(`passw|pwd|passphrase|secret|${PIN_KEY.source}`, "iu");
+// Inside an error, `authorization: "missing"` is the reason, not a credential.
+const IN_ERROR_KEYS = /passw|pwd|passphrase|secret|api[_-]?key|private[_-]?key/iu;
+const ERROR_KEY = /^(errors?|message)$/iu;
+// Named after a secret, yet state about it or a cursor the model must send back.
+const STATE_OR_CURSOR = /[_-](status|enabled|count|type|at|id)$|(^|[_-])(next|page|continuation|cursor|pagination)[_-]?token$/iu;
 const COUNT_KEY = /tokens$/iu;
-const HIDDEN = "[hidden]";
+const NUMERIC = /^\s*-?\d+(\.\d+)?\s*$/u;
 const MAX_DEPTH = 50;
 const LOOKS_LIKE_JSON = /^\s*[[{]/u;
 const WITHHELD = "Plivo's reply was too large to show safely. Narrow the request with limit/offset or filters.";
 
-const holdsSecret = (key: string) => SECRET_KEY.test(key) && !CURSOR_KEY.test(key);
+/** Whether a key names a credential, before the exceptions a reply needs. */
+export const secretNamed = (key: string) => SECRET_KEY.test(key) || PIN_KEY.test(key);
+
+type Hide = "nothing" | "text" | "text and numbers";
+
+function hideUnder(key: string, inError: boolean): Hide {
+  if (!(inError ? IN_ERROR_KEYS.test(key) : secretNamed(key)) || STATE_OR_CURSOR.test(key)) return "nothing";
+  return NUMBER_KEYS.test(key) ? "text and numbers" : "text";
+}
 
 /**
- * A reply with its credential fields blanked at any depth: an endpoint read returns the SIP password. Under a
- * secret-named key everything but null and "" is hidden, and so is the `value` beside a secret-named `name` or `key`,
- * the way a list of headers is written. JSON held in a text field is searched too.
+ * A reply with its credential fields blanked at any depth: an endpoint read returns the SIP password. Only a value
+ * that could be a credential is hidden: text under a secret-named key, a number under a password-like one, and the
+ * `value` beside a secret-named `name` or `key`, the way a list of headers is written. JSON held in a text field is
+ * searched too. A JSON Schema's `properties` name fields without holding them, so their names hide nothing.
  */
-export function hideSecrets(v: unknown, secret = false, depth = 0): unknown {
+export function hideSecrets(v: unknown, hide: Hide = "nothing", depth = 0, inError = false, count = false, schema = false): unknown {
   if (depth > MAX_DEPTH) return HIDDEN;
-  if (Array.isArray(v)) return v.map((x) => hideSecrets(x, secret, depth + 1));
+  if (Array.isArray(v)) return v.map((x) => hideSecrets(x, hide, depth + 1, inError, count));
   if (v !== null && typeof v === "object") {
     const fields = Object.entries(v);
-    const named = fields.some(([k, x]) => /^(name|key)$/iu.test(k) && typeof x === "string" && holdsSecret(x));
-    const hidden = (k: string, x: unknown) =>
-      secret || (named && /^value$/iu.test(k)) || (holdsSecret(k) && !(typeof x === "number" && COUNT_KEY.test(k)));
+    const name = fields.find(([k, x]) => /^(name|key)$/iu.test(k) && typeof x === "string")?.[1] as string | undefined;
+    const under = (k: string, x: unknown): Hide => {
+      if (hide !== "nothing") return hide;
+      if (schema && x !== null && typeof x === "object") return "nothing";
+      return hideUnder(/^value$/iu.test(k) && name !== undefined ? name : k, inError);
+    };
     // fromEntries defines "__proto__" as a field; assignment would drop it.
-    return Object.fromEntries(fields.map(([k, x]) => [k, hideSecrets(x, hidden(k, x), depth + 1)]));
+    return Object.fromEntries(
+      fields.map(([k, x]) => [k, hideSecrets(x, under(k, x), depth + 1, inError || ERROR_KEY.test(k), COUNT_KEY.test(k), /^properties$/iu.test(k))]),
+    );
   }
-  if (secret) return v === null || v === undefined || v === "" ? v : HIDDEN;
+  if (hide !== "nothing") {
+    if (typeof v === "number") return hide === "text and numbers" ? HIDDEN : v;
+    if (typeof v !== "string" || v === "" || v === KEPT_PLACEHOLDER || (count && NUMERIC.test(v))) return v;
+    return HIDDEN;
+  }
   if (typeof v !== "string" || !LOOKS_LIKE_JSON.test(v)) return v;
   let parsed: unknown;
   try {
@@ -158,7 +184,7 @@ export function hideSecrets(v: unknown, secret = false, depth = 0): unknown {
   } catch {
     return v;
   }
-  const shown = JSON.stringify(hideSecrets(parsed, false, depth + 1));
+  const shown = JSON.stringify(hideSecrets(parsed, "nothing", depth + 1, inError));
   return shown === JSON.stringify(parsed) ? v : shown;
 }
 

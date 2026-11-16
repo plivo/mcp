@@ -735,7 +735,7 @@ describe("credential fields in Plivo's replies", () => {
     ["a field nested in lists and objects", { a: [{ b: [{ Api_Key: "S1" }] }] }, { a: [{ b: [{ Api_Key: "[hidden]" }] }] }],
     ["everything under a secret-named field", { PASSWORD: { old: "S1", all: ["S2"] } }, { PASSWORD: { old: "[hidden]", all: ["[hidden]"] } }],
     ["a field inside JSON text", { headers: '{"Authorization":"Bearer S1","x":1}' }, { headers: '{"Authorization":"[hidden]","x":1}' }],
-    ["numbers and booleans under a secret-named field", { password: 12345, token: true, pin: { secret: 7 } }, { password: H, token: H, pin: { secret: H } }],
+    ["a number that could be a password or PIN", { password: 12345, pin: 4321, door: { secret: 7 } }, { password: H, pin: H, door: { secret: H } }],
     ["more names for a secret", { passwd: "S1", db_pwd: "S1", passphrase: "S1", private_key: "S1", "Private-Key": "S1", bearer: "S1", id_jwt: "S1" }, { passwd: H, db_pwd: H, passphrase: H, private_key: H, "Private-Key": H, bearer: H, id_jwt: H }],
     [
       "the value of a header-style pair",
@@ -748,6 +748,27 @@ describe("credential fields in Plivo's replies", () => {
     ["ids and plain text", { auth_id: ORG_A, credential_uuid: "c1", text: "my password is S1" }, { auth_id: ORG_A, credential_uuid: "c1", text: "my password is S1" }],
   ])("hideSecrets on %s", (_, body, shown) => {
     expect(hideSecrets(body)).toEqual(shown);
+  });
+
+  const KEPT = `${"*".repeat(3)}REDACTED${"*".repeat(3)}`;
+  it.each<[string, unknown]>([
+    ["the placeholder Plivo sends for a stored secret, which keeps that secret when sent back", { nodes: [{ id: "n1", config: { api_key: KEPT, headers: [{ name: "Authorization", value: KEPT }], auth_params: `{"password":"${KEPT}"}` } }] }],
+    [
+      "a JSON Schema that describes secret fields",
+      { type: "object", required: ["api_key", "password"], properties: { api_key: { type: "string", description: "The provider's API key." }, password: { type: "string", default: "" }, auth: { type: "object", properties: { token: { type: "string" } } } } },
+    ],
+    ["state and metadata named after a secret", { authorization_status: "approved", cookies_enabled: "yes", jwt_enabled: "true", token_type: "Bearer", secret_id: "s1", token_expires_at: "2026-11-17", api_key_count: "3" }],
+    ["a boolean under any name", { token: true, has_password: false, secret: true, auth: { jwt: true } }],
+    ["cursors", { next_token: "c1", next_page_token: "c2", page_token: "c3", next: "c4", cursor: "c5", continuation_token: "c6" }],
+    ["counts and usage, as numbers or numeric text", { prompt_tokens: 12, completion_tokens: "34", total_tokens: 46, token_count: "46", max_tokens: "100", token: 5 }],
+    ["the reason in an error", { errors: { authorization: "missing header", token: ["is invalid"] }, error: "bad token", message: { cookie: "expired" } }],
+  ])("hideSecrets leaves alone %s", (_, body) => {
+    expect(hideSecrets(body)).toEqual(body);
+  });
+
+  it("still hides a real value beside each of those", () => {
+    const body = { properties: { api_key: "S1" }, errors: { password: "S1", client_secret: "S1" }, tokens: "S1", access_token: "S1", config: { api_key: KEPT, password: "S1" } };
+    expect(hideSecrets(body)).toEqual({ properties: { api_key: H }, errors: { password: H, client_secret: H }, tokens: H, access_token: H, config: { api_key: KEPT, password: H } });
   });
 
   const clipped = async (text: string) =>
@@ -851,6 +872,36 @@ describe("search_docs", () => {
   it("gives the auth proxy exactly the catalog's routes", () => {
     const routes = new Map(catalogData.operations.map((o) => [`${o.method} ${o.path}`, o.module]));
     expect(new Map(proxyRoutes.map((r) => [`${r.method} ${r.path}`, r.module]))).toEqual(routes);
+  });
+});
+
+describe("a write that would send this server's own hidden marker as a credential", () => {
+  const check = (id: string, params: Record<string, unknown>) => inputError(getOperation(id)!, { params });
+  const H = "[hidden]";
+
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ["an endpoint password read back", "POST /Endpoint/{endpoint_id}/", { password: H }, "password"],
+    ["a node config, nested", "POST /AgentFlow/{agent_id}/", { nodes: [{ id: "n1", config: { model: { Api_Key: H } } }], connections: [] }, "Api_Key"],
+    ["a header-style pair", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { headers: [{ name: "Authorization", value: H }] } }] }, "Authorization"],
+    ["JSON text in a node config", "POST /AgentFlow/{agent_id}/", { nodes: [{ config: { auth_params: `{"token":"${H}"}` } }] }, "token"],
+    ["everything under a secret-named field", "POST /AgentFlow/", { nodes: [{ config: { secrets: { main: [H] } } }] }, "secrets"],
+  ])("is refused: %s", (_, id, params, key) => {
+    expect(check(id, params)).toBe(`${key} holds "[hidden]", which this server put in place of the real value in a reply; supply the real value, or leave the field out`);
+  });
+
+  it("is refused before the user is asked, and nothing is sent", async () => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), "plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { nodes: [{ config: { api_key: H } }], connections: [] } });
+    expect(res.isError).toBe(true);
+    expect(res.raw).toContain('api_key holds "[hidden]"');
+    expect(sent).toHaveLength(0);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["Plivo's own placeholder for a stored secret", { nodes: [{ config: { api_key: `${"*".repeat(3)}REDACTED${"*".repeat(3)}` } }] }],
+    ["the marker as ordinary text", { name: H, nodes: [{ config: { greeting: H } }] }],
+  ])("lets through %s", (_, params) => {
+    expect(check("POST /AgentFlow/{agent_id}/", params)).toBeUndefined();
   });
 });
 

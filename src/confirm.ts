@@ -13,7 +13,7 @@ import * as z from "zod/v4";
 import { approvalId, type Approvals } from "./approvals";
 import { getOperation, type Operation } from "./catalog";
 import { cleanName } from "./oauth";
-import { SECRET_KEY, type BuiltRequest } from "./upstream";
+import { KEPT_PLACEHOLDER, SECRET_KEY, type BuiltRequest } from "./upstream";
 
 const KEEPS_ACCESS = "This creates or changes a way to place calls on this account, and it keeps working after this app is disconnected.";
 const REROUTES = "This changes where this account's calls or messages are sent.";
@@ -172,7 +172,6 @@ class Unshowable extends Error {}
 
 // cx-core returns secrets as this placeholder and keeps the stored secret when it comes back, so a user can
 // tell a kept secret from a new one.
-const KEPT_PLACEHOLDER = `${"*".repeat(3)}REDACTED${"*".repeat(3)}`;
 const hide = (s: string) => (s === KEPT_PLACEHOLDER ? "(unchanged: the stored secret)" : `(hidden, ${s.length} characters)`);
 
 // Forgiving like Python's unquote: one bad escape must not stop "api%5fkey" being read as api_key.
