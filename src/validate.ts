@@ -72,14 +72,16 @@ function urlError(name: string, raw: string): string | undefined {
 }
 
 /** The values to check: empty for an absent one, undefined for a shape that could carry them past the checks. */
-function list(v: unknown, sep?: string): string[] | undefined {
+function list(v: unknown): string[] | undefined {
   if (v === undefined || v === null) return [];
-  if (typeof v === "string") return sep === undefined ? [v] : v.split(sep).map((s) => s.trim());
+  if (typeof v === "string") return [v];
   // Checked as its digits: a number could otherwise carry destinations past the format check and the cap.
   if (typeof v === "number") return [String(v)];
   if (Array.isArray(v) && v.every((x) => typeof x === "string" || typeof x === "number")) return v.map(String);
   return undefined;
 }
+
+const split = (values: string[], sep: string) => values.flatMap((v) => v.split(sep).map((s) => s.trim()));
 
 /**
  * Why a write is refused before the user is asked to approve it: a value that cannot be a phone number or a
@@ -90,9 +92,13 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
   const number = args.path_params?.number;
   if (number !== undefined && !E164.test(String(number))) return `number must be ${LOOKS.number[1]}; got ${JSON.stringify(number)}`;
 
+  // Plivo would split the destinations on it, and the count below on "<" would be wrong.
+  if (CAPPED[op.id] && params.delimiter != null) return 'delimiter is not accepted through this server; separate destinations with "<"';
+
   for (const [name, kind] of Object.entries(NUMBER_PARAMS[op.id] ?? {})) {
-    const values = list(params[name], "<");
-    if (!values) return `${name} must be a string or a list of strings`;
+    const given = list(params[name]);
+    if (!given) return `${name} must be a string or a list of strings`;
+    const values = Array.isArray(params[name]) ? given : split(given, "<");
     const [patterns, what] = LOOKS[kind];
     const bad = values.find((v) => !patterns.some((re) => re.test(v)));
     if (bad !== undefined) return `${name} must be ${what}; got ${JSON.stringify(bad)}`;
@@ -106,9 +112,9 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
 
   for (const [name, v] of Object.entries(params)) {
     if (!URL_PARAM.test(name)) continue;
-    const urls = list(v, URL_LIST_PARAM.test(name) ? "," : undefined);
+    const urls = list(v);
     if (!urls) return `${name} must be a URL or a list of URLs`;
-    for (const raw of urls) {
+    for (const raw of URL_LIST_PARAM.test(name) ? split(urls, ",") : urls) {
       if (raw === "") continue;
       const err = urlError(name, raw);
       if (err) return `${err}; got ${JSON.stringify(raw)}`;

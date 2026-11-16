@@ -718,6 +718,9 @@ describe("destination lists and URL values of any JSON type", () => {
     ["a URL nested in a list", "POST /Call/", { answer_url: [["https://169.254.169.254/"]] }, "answer_url must be a URL or a list of URLs"],
     ["a URL inside an object", "POST /Message/", { media_urls: { a: "https://localhost/x" } }, "media_urls must be a URL or a list of URLs"],
     ["a URL that is not text", "POST /Call/", { answer_url: true }, "answer_url must be a URL or a list of URLs"],
+    ["50 SIP destinations joined by another delimiter", "POST /Call/", { from: "14155550100", to: Array.from({ length: 50 }, (_, i) => `sip:u${i}@x.example.com`).join("|"), delimiter: "|" }, "delimiter is not accepted"],
+    ["a delimiter on a message", "POST /Message/", { dst: strings.slice(0, 2).join(","), delimiter: "," }, "delimiter is not accepted"],
+    ["an internal URL after a comma inside a list item", "POST /Message/", { media_urls: ["https://example.com/x.png,https://localhost/y.png"] }, "media_urls must point at a public host"],
     ["an internal URL after a comma in a URL list", "POST /Call/{call_uuid}/Play/", { urls: "https://example.com/a.mp3,https://localhost/b.mp3" }, "urls must point at a public host"],
     ["an internal URL after a comma in opt-in images", "POST /TollfreeVerification/", { optin_image_url: "https://example.com/a.png, https://10.0.0.1/b.png" }, "optin_image_url must point at a public host"],
   ])("refuses %s", (_, id, params, why) => {
@@ -726,7 +729,8 @@ describe("destination lists and URL values of any JSON type", () => {
 
   it.each<[string, string, Record<string, unknown>]>([
     ["a comma in a single URL's query", "POST /Call/", { answer_url: "https://example.com/answer?ids=1,2" }],
-    ["a comma in a URL given as a list item", "POST /Message/", { media_urls: ["https://example.com/a.png?size=1,2"] }],
+    ["a comma in a single URL given as a list", "POST /Call/", { answer_url: ["https://example.com/answer?ids=1,2"] }],
+    ["an absent delimiter", "POST /Call/", { to: "14155550101", delimiter: null }],
     ["one destination as a JSON number", "POST /Message/", { dst: 14155551000 }],
     ["10 multiparty call participants", MPC, { to: strings.slice(1) }],
     ["values cleared with null", "POST /Call/", { to: null, hangup_url: null }],
