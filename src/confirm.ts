@@ -78,12 +78,14 @@ export function approvalReasons(op: Operation): string[] {
 
 /**
  * What the user approves: one exact request (method, URL and body), by digest. `k` marks state minted for an
- * elicitation. `n` makes every approval distinct, so spending one cannot spend another for the same request.
+ * elicitation and for an approval link, whose `a` is the approval's id at the auth proxy. `n` makes every approval
+ * distinct, so spending one cannot spend another for the same request.
  */
 interface Pending {
   d: string;
-  k?: "elicit";
+  k?: "elicit" | "link";
   n?: string;
+  a?: string;
 }
 
 export interface Confirmer {
@@ -100,7 +102,7 @@ export const confirmationCodeField = z
   .string()
   .max(2000)
   .optional()
-  .describe("Only after a previous call returned confirmation_required and the user approved that exact action.");
+  .describe("Only after a previous call returned approval_required or confirmation_required and the user approved that exact action.");
 
 export function createConfirmer(secret: string, approvals?: Approvals, onTokenRejected?: () => void): Confirmer {
   // Bound to the caller's credential: one account's approval cannot authorize another's request.
@@ -362,10 +364,61 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   return { approved: false, result: textResult("Nothing was done: the user did not approve this action.", true) };
 }
 
+const LINK_INSTRUCTIONS =
+  "Give the user approval_url and ask them to open it and approve this action there, signed in to Plivo. You cannot " +
+  "approve it yourself. After they say they approved, call the same tool again with exactly the same arguments plus " +
+  "confirmation_code.";
+
+/**
+ * For a client with no approval dialog: registers the action at the auth proxy and returns the Plivo console page
+ * where the signed-in user approves it. The model gets a link and a handle, neither of which approves anything.
+ * Undefined when there is no proxy to hold approvals, which leaves the confirmation code.
+ */
+async function askByLink(c: Confirmer, ctx: ServerContext, d: string, action: string): Promise<Gate | undefined> {
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  if (!c.approvals || !authorization.startsWith("Bearer ")) return undefined;
+  const made = await c.approvals.create(d, action, authorization);
+  if (made === "absent") {
+    console.warn("plivo-mcp: the auth proxy has no approval-link route (404 or 405), so this approval falls back to a confirmation code");
+    return undefined;
+  }
+  if (made === "failed") return { approved: false, result: textResult("The approval could not be set up, so nothing was done. Try again shortly.", true) };
+  return {
+    approved: false,
+    result: textResult({
+      status: "approval_required",
+      nothing_done_yet: true,
+      action,
+      approval_url: made.url,
+      confirmation_code: await c.code.mint({ d, k: "link", a: made.id, n: crypto.randomUUID() }, ctx),
+      expires_in_seconds: Math.min(CODE_TTL_SECONDS, made.expiresInSeconds ?? CODE_TTL_SECONDS),
+      instructions: LINK_INSTRUCTIONS,
+    }),
+  };
+}
+
+/** Asks the auth proxy what the user decided on the approval page; an approval is handed out once. */
+async function redeemLink(c: Confirmer, ctx: ServerContext, p: Pending): Promise<Gate> {
+  const authorization = ctx.http?.authInfo?.token ?? "";
+  const outcome = c.approvals && p.a ? await c.approvals.redeem(p.a, p.d, authorization) : "failed";
+  if (outcome === "approved") return { approved: true };
+  if (outcome === "rejected") c.onTokenRejected?.();
+  const why = {
+    pending: "The user has not approved this action yet. Nothing was done; ask them to open approval_url and approve it, then call again with the same confirmation_code.",
+    denied: "Nothing was done: the user denied this action.",
+    gone: "This approval expired or was already used. Nothing was done; call again without confirmation_code and ask the user again.",
+    rejected: "Plivo refused this token: it has expired or was revoked. Nothing was done; sign in again.",
+    invalid: "This approval cannot be checked. Nothing was done; call again without confirmation_code and ask the user again.",
+    failed: "The approval could not be checked, so nothing was done. Try again shortly.",
+  }[outcome];
+  return { approved: false, result: textResult(why, true) };
+}
+
 /**
  * Decides whether a request that needs approval (see approvalReasons) may be sent now. A client that can show its own
- * approval dialog is asked through it; any other gets a preview and a code, and only a call carrying a fresh code, from
- * the same caller, for this exact request is sent.
+ * approval dialog is asked through it; any other gets a link to approve it in the Plivo console. Without an auth
+ * proxy to hold approvals (local development) it gets a preview and a code, and only a call carrying a fresh code,
+ * from the same caller, for this exact request is sent.
  */
 export async function confirmGate(
   c: Confirmer,
@@ -388,9 +441,14 @@ export async function confirmGate(
     } catch {
       return { approved: false, result: textResult("confirmation_code is invalid or expired. Call again without it to get a new one, and ask the user again.", true) };
     }
-    if (p.k === undefined && p.d === d) return spend(c, ctx, p);
+    // Only the two kinds minted as a code are taken here: any other signed state proves no user said yes.
+    if (p.d === d && p.k === "link") return redeemLink(c, ctx, p);
+    if (p.d === d && p.k === undefined) return spend(c, ctx, p);
     return { approved: false, result: textResult("confirmation_code was issued for a different request. Nothing was done.", true) };
   }
+
+  const link = await askByLink(c, ctx, d, shown.action);
+  if (link) return link;
 
   return {
     approved: false,
