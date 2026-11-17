@@ -1,22 +1,28 @@
-# Plivo plugin for Grok Build
+# Plivo plugin for Grok Build and Cursor
 
-Connects Grok Build to the hosted Plivo MCP server, so it can send SMS, make calls, manage phone numbers and call
-the Plivo API on your own Plivo account.
+Connects Grok Build or Cursor to the hosted Plivo MCP server, so it can send SMS, make calls, manage phone numbers
+and call the Plivo API on your own Plivo account.
 
-The plugin contains only an MCP server reference (`.mcp.json`). It ships no code, skills, commands or hooks.
+The plugin contains only an MCP server reference: `.mcp.json` for Grok Build, `mcp.json` for Cursor. It ships no
+code, skills, commands or hooks.
+
+## Use
+
+Install the plugin from the app's marketplace, or add `https://mcp.plivo.com/mcp` as an MCP server in the app's
+settings. Then ask, for example: "List my Plivo phone numbers" or "Why did my last call fail?"
 
 ## Sign-in
 
-The first time Grok Build uses the server, it opens Plivo's sign-in page in your browser, where you sign in with your
-Plivo account and approve the connection. On that page you choose which of your organizations Grok Build can use and
+The first time the app uses the server, it opens Plivo's sign-in page in your browser, where you sign in with your
+Plivo account and approve the connection. On that page you choose which of your organizations the app can use and
 how much it can do: full access, read-only, or a level for each area such as messages, calls and phone numbers. No API
 key or token is stored in this plugin.
 
 ## Network endpoints and credentials
 
 - **Endpoint:** `https://mcp.plivo.com/mcp`, the hosted Plivo MCP server. The plugin calls nothing else.
-- **Credential:** the sign-in token Grok Build receives when you sign in with Plivo. Grok Build keeps it. It expires
-  after 30 days, and it works only through the Plivo MCP server.
+- **Credential:** the sign-in token the app receives when you sign in with Plivo. The app keeps it. It expires after
+  30 days, and it works only through the Plivo MCP server.
 
 ## Data
 

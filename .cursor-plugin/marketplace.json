@@ -1,0 +1,12 @@
+{
+  "name": "plivo",
+  "owner": {
+    "name": "Plivo"
+  },
+  "plugins": [
+    {
+      "name": "plivo",
+      "source": "plugin"
+    }
+  ]
+}
