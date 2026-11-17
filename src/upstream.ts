@@ -6,6 +6,10 @@ export interface Credential {
   authorization: string;
   /** Value for {auth_id} in the path. The auth proxy resolves `me` from the stk_ token. */
   authId: string;
+  /** The connecting IP, the MCP app (its User-Agent) and X-Forwarded-For, sent to the auth proxy for its logs only. */
+  clientIp?: string;
+  client?: string;
+  forwardedFor?: string;
 }
 
 // The auth proxy mints "stk_" + 32 base62 characters.
@@ -33,6 +37,33 @@ export function parseCredential(header: string | null, allowBasic: boolean): Cre
     return { authorization: header, authId };
   }
   return { error: "unsupported Authorization scheme" };
+}
+
+const IPV4_PART = "(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4 = new RegExp(`^${IPV4_PART}(\\.${IPV4_PART}){3}$`, "u");
+const MAX_CLIENT = 200;
+const MAX_FORWARDED = 256;
+
+// The character check keeps anything but an address out of the brackets; the URL parser checks IPv6 syntax.
+const isIp = (v: string) => IPV4.test(v) || (v.includes(":") && /^[\da-f:.]+$/iu.test(v) && URL.canParse(`http://[${v}]/`));
+// Printable ASCII only: it cannot break a log line, and fetch never refuses it and fails the call.
+const printable = (v: string | null, max: number) => (v ?? "").replace(/[^\x20-\x7e]/gu, "").trimStart().slice(0, max).trimEnd();
+
+export function clientOf(headers: Headers): Pick<Credential, "clientIp" | "client" | "forwardedFor"> {
+  const ip = headers.get("CF-Connecting-IP") ?? "";
+  const app = printable(headers.get("User-Agent"), MAX_CLIENT);
+  // CloudFront sits in front, so CF-Connecting-IP is its edge; the caller's own address is only in X-Forwarded-For.
+  const forwarded = printable(headers.get("X-Forwarded-For"), MAX_FORWARDED);
+  return { ...(isIp(ip) ? { clientIp: ip } : {}), ...(app ? { client: app } : {}), ...(forwarded ? { forwardedFor: forwarded } : {}) };
+}
+
+export function clientHeaders(cred: Credential): Record<string, string> {
+  return {
+    "X-Request-Id": crypto.randomUUID(),
+    ...(cred.clientIp ? { "X-MCP-Client-IP": cred.clientIp } : {}),
+    ...(cred.client ? { "X-MCP-Client": cred.client } : {}),
+    ...(cred.forwardedFor ? { "X-MCP-Forwarded-For": cred.forwardedFor } : {}),
+  };
 }
 
 export interface CallArgs {
@@ -224,6 +255,7 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
     Authorization: cred.authorization,
     Accept: "application/json",
     "User-Agent": "plivo-mcp/0.1",
+    ...clientHeaders(cred),
   };
   if (req.body !== undefined) headers["Content-Type"] = "application/json";
   // redirect: "manual" so a 3xx can never carry the Authorization header to another host.

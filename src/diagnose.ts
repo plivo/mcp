@@ -1,7 +1,7 @@
 import * as z from "zod/v4";
 import { notGranted, notGrantedModule } from "./permissions";
 import { getOperation } from "./catalog";
-import { buildRequest, callUpstream, readCapped, type Credential } from "./upstream";
+import { buildRequest, callUpstream, clientHeaders, readCapped, type Credential } from "./upstream";
 
 // The assistant does live log lookups: 30 s to 2 min for a call.
 const TIMEOUT_MS = 150_000;
@@ -95,6 +95,7 @@ export async function diagnose(kind: DiagnoseKind, uuid: string, caller: Credent
         "Content-Type": "application/json",
         "User-Agent": "plivo-mcp/0.1",
         "X-Client-Type": "mcp",
+        ...clientHeaders(caller),
       },
       body: JSON.stringify(ask),
       redirect: "manual",

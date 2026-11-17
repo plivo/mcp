@@ -5,7 +5,10 @@ The hosted [Model Context Protocol](https://modelcontextprotocol.io) server for 
 
 It runs as a stateless Cloudflare Worker. It never holds Plivo credentials: each call carries the user's
 scoped `stk_` token to Plivo's auth proxy (`/v1/proxy`), which checks the token's scope and swaps in the account's
-Auth ID and Auth Token.
+Auth ID and Auth Token. For the proxy's logs, each call also carries a fresh `X-Request-Id`, the MCP app's
+`User-Agent` as `X-MCP-Client`, the connecting IP as `X-MCP-Client-IP` and the inbound `X-Forwarded-For` as
+`X-MCP-Forwarded-For`: CloudFront sits in front of the Worker, so the connecting IP is its edge and the caller's own
+address is only in the forwarded list.
 
 Opened in a browser, `https://mcp.plivo.com/` serves a landing page (`src/landing.ts`); other clients get one plain line.
 
