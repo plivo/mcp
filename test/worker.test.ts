@@ -785,7 +785,7 @@ describe("confirmation", () => {
     const filler = Object.fromEntries(Array.from({ length: 14 }, (_, i) => [`aaa${i}`, "x"]));
     const req = buildRequest(op, { params: { ...filler, text: "hi\ndst: +19990000000", dst: "+14155550101", src: "+14155550100" } }, { authorization: STK, authId: "me" }, API);
     if ("error" in req) throw new Error(req.error);
-    const lines = describeAction(op, req).split("\n");
+    const lines = describeAction(op, req).split(" \n");
     expect(lines.slice(2, 5)).toEqual(['dst: "+14155550101"', 'src: "+14155550100"', 'text: "hi\\ndst: +19990000000"']);
     expect(lines.filter((l) => l.startsWith("dst"))).toHaveLength(1);
     expect(lines).toHaveLength(2 + 17);
@@ -1609,7 +1609,7 @@ describe("approval through the client's own dialog", () => {
     expect(res.isError).toBe(false);
     expect(res.raw).not.toContain("confirmation_code");
     expect(asked).toHaveLength(1);
-    expect(asked[0].split("\n").slice(0, 3)).toEqual(["Send a Message (POST /Message/)", "This costs money.", 'dst: "+14155550101"']);
+    expect(asked[0].split(" \n").slice(0, 3)).toEqual(["Send a Message (POST /Message/).", "This costs money.", 'dst: "+14155550101"']);
     expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/${ORG_A}/Message/`, method: "POST", auth: STK, body: SMS }]);
   });
 
@@ -1661,6 +1661,25 @@ describe("approval through the client's own dialog", () => {
     expect(JSON.stringify(first)).not.toMatch(/Your decision|"Deny"/);
   });
 
+  it.each<[string, Record<string, unknown>, number]>([
+    ["send_sms", { ...SMS, text: "line one\nLine two" }, 8],
+    ["buy_number", { number: "14155550134" }, 6],
+    ["hangup_call", { call_uuid: "c1" }, 4],
+    ["plivo_api_write", { id: "POST /AgentFlow/{agent_id}/", path_params: { agent_id: "a1" }, params: { name: "Support" } }, 5],
+    ["switch_organization", { organization: ORG_B }, 5],
+  ])("asks about %s in lines that still read apart in an app that drops line breaks", async (tool, args, count) => {
+    const orgs = { data: { organizations: [{ auth_id: ORG_A, name: "Acme", current: true }, { auth_id: ORG_B, name: "Beta" }] } };
+    const { toWorker } = setup({}, (url) => ({ status: 200, body: url.endsWith("/mcp/organizations") ? orgs : { api_id: "x", auth_id: ORG_A, name: "Acme" } }));
+    const { client, asked } = await connectWithDialog(toWorker, { action: "decline" });
+    await call(client, tool, args);
+    const lines = asked[0].split("\n");
+    expect(lines).toHaveLength(count);
+    expect(lines.slice(0, -1).filter((l) => !/\S $/.test(l))).toEqual([]);
+    expect(lines[0].endsWith(". ")).toBe(true);
+    expect(lines.at(-1)).toBe("Accept to approve. Decline to cancel.");
+    expect(asked[0].replaceAll("\n", "")).not.toMatch(/[.)][A-Z]/);
+  });
+
   it("asks the user even when the model brings a confirmation code", async () => {
     const { toWorker, sent } = setup();
     const code = ((await call(await connect(toWorker), "send_sms", SMS)).parsed as { confirmation_code: string }).confirmation_code;
@@ -1710,7 +1729,7 @@ describe("cost in the approval preview", () => {
     expect(action).toContain(`Account: Auth ID ${ORG_A} "Acme", balance $12.50.`);
     expect(action).toContain("Price: $0.80 a month and $1.00 setup.");
     expect(action).toContain("Taxes may apply.");
-    expect(action.split("\n").slice(0, 3)).toEqual(["Buy a Phone Number (POST /PhoneNumber/14155550134/)", "This costs money.", "Price: $0.80 a month and $1.00 setup."]);
+    expect(action.split(" \n").slice(0, 3)).toEqual(["Buy a Phone Number (POST /PhoneNumber/14155550134/).", "This costs money.", "Price: $0.80 a month and $1.00 setup."]);
   });
 
   it("still asks, saying so, when the price lookup fails", async () => {
@@ -1887,7 +1906,7 @@ describe("organizations", () => {
     expect(sms).toContain(`Account: Auth ID ${ORG_A} ${shown("Acme")}.`);
 
     const move = ((await call(client, "switch_organization", { organization: ORG_B })).parsed as { action: string }).action;
-    expect(move.split("\n").slice(2)).toEqual([`From: Auth ID ${ORG_A} ${shown("Acme")}.`, `To: Auth ID ${ORG_B} ${shown("Beta")}.`]);
+    expect(move.split(" \n").slice(2)).toEqual([`From: Auth ID ${ORG_A} ${shown("Acme")}.`, `To: Auth ID ${ORG_B} ${shown("Beta")}.`]);
   });
 
   it.each<[string, Reply | undefined]>([

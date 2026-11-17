@@ -279,11 +279,14 @@ export interface Shown {
 
 const DESTINATIONS = ["dst", "to"];
 
+// The space keeps lines apart in an app that drops line breaks from a dialog; it does not depend on how a line ends.
+export const LINE_BREAK = " \n";
+
 export function describeAction(op: Operation, req: BuiltRequest, shown: Shown = {}): string {
   const u = new URL(req.url);
   const path = u.pathname.replace(/^.*\/v1\/Account\/[^/]+/, "") || "/";
   // An app may show only the first lines: the warnings, the price and who is reached must be among them.
-  const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)})`, ...approvalReasons(op), ...(shown.price ?? [])];
+  const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)}).`, ...approvalReasons(op), ...(shown.price ?? [])];
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
   // One send or call can fan out to many destinations joined with "<", each billed.
@@ -304,7 +307,7 @@ export function describeAction(op: Operation, req: BuiltRequest, shown: Shown = 
   const reached = names.filter((k) => DESTINATIONS.includes(k));
   lines.push(...reached.map(param), ...(shown.account ?? []), ...names.filter((k) => !reached.includes(k)).map(param), ...(shown.after ?? []));
   if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
-  return lines.join("\n");
+  return lines.join(LINE_BREAK);
 }
 
 /**
@@ -377,7 +380,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
     return {
       approved: false,
       result: inputRequired({
-        inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n${HOW_TO_ANSWER}`, requestedSchema: NO_FIELDS }) },
+        inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}${LINE_BREAK}${HOW_TO_ANSWER}`, requestedSchema: NO_FIELDS }) },
         requestState: await c.code.mint({ d, k: "elicit", n: crypto.randomUUID(), o: account }, ctx),
       }),
     };
