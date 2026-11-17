@@ -19,7 +19,8 @@ const API = "http://127.0.0.1:8799/v1/proxy";
 const TEST_SECRET = "test-confirm-secret-".padEnd(48, "x");
 const SIP_PASSWORD = "x".repeat(10);
 
-const OAUTH = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y") };
+const CLIENT_SECRET = "test-mcp-client-secret-".padEnd(48, "z");
+const OAUTH = { PLIVO_LOGIN_BASE: "http://127.0.0.1:8798", OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), MCP_CLIENT_SECRET: CLIENT_SECRET };
 // The account read the Worker asks the auth proxy for before it answers any request.
 const PROBE = `${API}/v1/Account/me/`;
 const REFUSED: Reply = { status: 401, body: { error: { global_error: "Token is unknown or expired" } }, headers: { "WWW-Authenticate": 'Bearer error="invalid_token"' } };
@@ -104,6 +105,7 @@ describe("HTTP edge", () => {
     ["confirmation without a secret", { CONFIRM_SECRET: undefined }],
     ["confirmation with a short secret", { CONFIRM_SECRET: "short" }],
     ["plain-http auth proxy", { PLIVO_LOGIN_BASE: "http://login.example" }],
+    ["sign-in without the client secret", { ...OAUTH, MCP_CLIENT_SECRET: undefined }],
     ["allow mode against a real upstream", { CONFIRMATION_MODE: "allow", PLIVO_API_BASE: "https://proxy.example/v1/proxy" }],
   ])(
     "refuses to serve with a %s",
@@ -1246,7 +1248,7 @@ function setupWithProxy(
     return new Response(JSON.stringify(api(u, body)), { status: 200, headers: { "Content-Type": "application/json" } });
   };
   const worker = createWorker(upstream as typeof fetch);
-  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), ...envOverrides };
+  const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: "test-oauth-secret-".padEnd(48, "y"), MCP_CLIENT_SECRET: CLIENT_SECRET, ...envOverrides };
   const toWorker = (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env);
   const decide = (status: "approved" | "denied") => {
     for (const p of pending.values()) p.status = status;
@@ -1260,6 +1262,38 @@ function respelled(signed: string): string[] {
   const last = alphabet[alphabet.indexOf(signed.at(-1)!) ^ 1];
   return [`${signed}=`, `${signed}\n`, signed.slice(0, -1) + last];
 }
+
+describe("the auth proxy is shown this server's client secret", () => {
+  const SECRET_HEADER = "X-Plivo-MCP-Client-Key";
+  const serve = (env: Partial<Env>) => {
+    const seen: { url: string; secret: string | null }[] = [];
+    const worker = createWorker((async (url: string, init?: RequestInit) => {
+      seen.push({ url, secret: new Headers(init?.headers).get(SECRET_HEADER) });
+      return new Response(JSON.stringify({ api_id: "x", auth_id: ORG_A, data: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch);
+    const toWorker = (input: string | URL | Request, init?: RequestInit) =>
+      worker.fetch(withHost(new Request(input, init)), { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, ...env });
+    return { seen, toWorker };
+  };
+
+  it("on the token check, a read, and an approval", async () => {
+    const { seen, toWorker } = serve({ PLIVO_LOGIN_BASE: LOGIN, OAUTH_SECRET: OAUTH.OAUTH_SECRET, MCP_CLIENT_SECRET: CLIENT_SECRET });
+    const client = await connect(toWorker);
+    await call(client, "get_account", {});
+    const code = ((await call(client, "send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi" })).parsed as { confirmation_code: string }).confirmation_code;
+    await call(client, "send_sms", { src: "+14155550100", dst: "+14155550101", text: "hi", confirmation_code: code });
+    expect(seen.some((r) => r.url.startsWith(`${LOGIN}/v1/accounts/cli/approvals`))).toBe(true);
+    expect(seen.some((r) => r.url.startsWith(API))).toBe(true);
+    expect(seen.filter((r) => r.secret !== CLIENT_SECRET)).toEqual([]);
+  });
+
+  it("and Plivo's own API, reached with no sign-in, is not", async () => {
+    const { seen, toWorker } = serve({ MCP_CLIENT_SECRET: CLIENT_SECRET });
+    await call(await connect(toWorker), "get_account", {});
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((r) => r.secret !== null)).toEqual([]);
+  });
+});
 
 describe("an approval is spent once", () => {
   const SMS = { src: "+14155550100", dst: "+14155550101", text: "hi" };
