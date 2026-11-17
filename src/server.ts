@@ -2,7 +2,7 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer } from "./confirm";
+import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer, type Shown } from "./confirm";
 import { diagnose, diagnoseTools } from "./diagnose";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
@@ -127,7 +127,7 @@ async function approvalAccount(
   caller: Credential,
   config: ServerConfig,
   asking: boolean,
-): Promise<{ id: string; lines: string[] } | { unknown: true } | { notGranted: string }> {
+): Promise<{ id: string; lines: Shown } | { unknown: true } | { notGranted: string }> {
   const get = async (id: string, a: CallArgs): Promise<Record<string, unknown> | undefined> => {
     const r = buildRequest(getOperation(id)!, a, caller, config.apiBase);
     if ("error" in r) return undefined;
@@ -165,13 +165,15 @@ async function approvalAccount(
     id = current.auth_id;
     name = current.name;
   }
-  if (!asking) return { id, lines: [] };
+  if (!asking) return { id, lines: {} };
   const balance = String(account?.cash_credits ?? "");
-  const lines = [`Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.`];
-  if (buying) lines.push(price ?? "Price: unavailable; search_numbers shows it.");
+  const lines: Shown = {
+    price: buying ? [price ?? "Price: unavailable; search_numbers shows it."] : [],
+    account: [`Account: ${nameAccount(name, id)}${op.costs_money && PRICE.test(balance) ? `, balance $${balance}` : ""}.`],
+    after: op.costs_money ? ["Taxes may apply."] : [],
+  };
   // The Lookup API's published rate; the API itself returns no price.
-  if (op.id === LOOKUP_OP) lines.push("Price: $0.004 per lookup.");
-  if (op.costs_money) lines.push("Taxes may apply.");
+  if (op.id === LOOKUP_OP) lines.price?.push("Price: $0.004 per lookup.");
   return { id, lines };
 }
 

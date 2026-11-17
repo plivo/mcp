@@ -786,7 +786,7 @@ describe("confirmation", () => {
     const req = buildRequest(op, { params: { ...filler, text: "hi\ndst: +19990000000", dst: "+14155550101", src: "+14155550100" } }, { authorization: STK, authId: "me" }, API);
     if ("error" in req) throw new Error(req.error);
     const lines = describeAction(op, req).split("\n");
-    expect(lines.slice(2, 5)).toEqual(['src: "+14155550100"', 'dst: "+14155550101"', 'text: "hi\\ndst: +19990000000"']);
+    expect(lines.slice(2, 5)).toEqual(['dst: "+14155550101"', 'src: "+14155550100"', 'text: "hi\\ndst: +19990000000"']);
     expect(lines.filter((l) => l.startsWith("dst"))).toHaveLength(1);
     expect(lines).toHaveLength(2 + 17);
   });
@@ -1575,7 +1575,7 @@ describe("approval on a Plivo console page, for a client with no approval dialog
 });
 
 type Answer = { action: "accept" | "decline" | "cancel"; content?: Record<string, string | number | boolean | string[]> };
-const APPROVED: Answer = { action: "accept", content: { decision: "Approve" } };
+const APPROVED: Answer = { action: "accept" };
 
 async function connectWithDialog(toWorker: typeof fetch, answer: Answer, opts: { legacy?: boolean; manual?: boolean } = {}) {
   const transport = new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
@@ -1609,22 +1609,18 @@ describe("approval through the client's own dialog", () => {
     expect(res.isError).toBe(false);
     expect(res.raw).not.toContain("confirmation_code");
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain('dst: "+14155550101"');
-    expect(asked[0]).toContain("This costs money.");
+    expect(asked[0].split("\n").slice(0, 3)).toEqual(["Send a Message (POST /Message/)", "This costs money.", 'dst: "+14155550101"']);
     expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/${ORG_A}/Message/`, method: "POST", auth: STK, body: SMS }]);
   });
 
   it.each<[string, Answer, string]>([
     ["declines", { action: "decline" }, "chose to deny"],
     ["cancels", { action: "cancel" }, "cancelled or dismissed"],
-    ["declines a form that had Approve chosen", { action: "decline", content: { decision: "Approve" } }, "chose to deny"],
-    ["cancels a form that had Approve chosen", { action: "cancel", content: { decision: "Approve" } }, "cancelled or dismissed"],
-    ["chooses Deny", { action: "accept", content: { decision: "Deny" } }, "chose to deny"],
-    ["submits without a choice", { action: "accept", content: {} }, "without choosing"],
-    ["submits with no content", { action: "accept" }, "without choosing"],
-    ["answers with the wrong type", { action: "accept", content: { decision: true } }, "without choosing"],
-    ["answers in another spelling", { action: "accept", content: { decision: "approve" } }, "without choosing"],
-    ["answers the tick box this dialog used to be", { action: "accept", content: { approve: true } }, "without choosing"],
+    ["declines with content", { action: "decline", content: { decision: "Approve" } }, "chose to deny"],
+    ["cancels with content", { action: "cancel", content: {} }, "cancelled or dismissed"],
+    ["answers the Approve choice this dialog used to carry", { action: "accept", content: { decision: "Approve" } }, "not one this server takes as approval"],
+    ["answers the Deny choice this dialog used to carry", { action: "accept", content: { decision: "Deny" } }, "not one this server takes as approval"],
+    ["accepts with any other content", { action: "accept", content: { approve: true } }, "not one this server takes as approval"],
   ])("sends nothing when the user %s", async (_, answer, why) => {
     const { toWorker, sent } = setup();
     const { client } = await connectWithDialog(toWorker, answer);
@@ -1636,18 +1632,33 @@ describe("approval through the client's own dialog", () => {
     expect(writes(sent)).toHaveLength(0);
   });
 
-  it("offers Approve and Deny as a required choice with nothing chosen beforehand", async () => {
+  it("sends on an accept with empty content, which a form without fields may carry", async () => {
+    const { toWorker, sent } = setup();
+    const { client } = await connectWithDialog(toWorker, { action: "accept", content: {} });
+    expect((await call(client, "send_sms", SMS)).isError).toBe(false);
+    expect(writes(sent)).toHaveLength(1);
+  });
+
+  it("sends nothing on an answer that is not an elicitation result", async () => {
+    const { toWorker, sent } = setup();
+    const { client } = await connectWithDialog(toWorker, APPROVED, { manual: true });
+    const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as { requestState: string };
+    for (const approve of [{ action: "approve" }, { accept: true }, "accept"]) {
+      const retry = (await client.callTool({ name: "send_sms", arguments: SMS, inputResponses: { approve }, requestState: first.requestState } as never).catch((e: Error) => ({ isError: true, content: [{ text: e.message }] }))) as { isError?: boolean };
+      expect(retry.isError).toBe(true);
+    }
+    expect(writes(sent)).toHaveLength(0);
+  });
+
+  it("asks with no field of its own: the app's Accept and Decline are the decision", async () => {
     const { client } = await connectWithDialog(setup().toWorker, APPROVED, { manual: true });
     const first = (await client.callTool({ name: "send_sms", arguments: SMS }, { allowInputRequired: true })) as unknown as {
       inputRequests: { approve: { params: { message: string; requestedSchema: unknown } } };
     };
     const { message, requestedSchema } = first.inputRequests.approve.params;
-    expect(message.endsWith("\n\nApprove this action?")).toBe(true);
-    expect(requestedSchema).toEqual({
-      type: "object",
-      properties: { decision: { type: "string", title: "Your decision", enum: ["Approve", "Deny"] } },
-      required: ["decision"],
-    });
+    expect(message.endsWith("\nAccept to approve. Decline to cancel.")).toBe(true);
+    expect(requestedSchema).toEqual({ type: "object", properties: {} });
+    expect(JSON.stringify(first)).not.toMatch(/Your decision|"Deny"/);
   });
 
   it("asks the user even when the model brings a confirmation code", async () => {
@@ -1699,6 +1710,7 @@ describe("cost in the approval preview", () => {
     expect(action).toContain(`Account: Auth ID ${ORG_A} "Acme", balance $12.50.`);
     expect(action).toContain("Price: $0.80 a month and $1.00 setup.");
     expect(action).toContain("Taxes may apply.");
+    expect(action.split("\n").slice(0, 3)).toEqual(["Buy a Phone Number (POST /PhoneNumber/14155550134/)", "This costs money.", "Price: $0.80 a month and $1.00 setup."]);
   });
 
   it("still asks, saying so, when the price lookup fails", async () => {
