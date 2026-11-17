@@ -487,9 +487,15 @@ func (s *scanner) add(method string, u val, spend bool, src string) {
 // docs placeholder: /10dlc/Campaign/{id}/ must not cover the literal /10dlc/Campaign/Import/.
 func (inv *CLIInventory) Covers(method, accountRelPath string) []*CLIUse {
 	docs := splitPath(accountRelPath)
+	// A use off the account API is one "!"-marked segment, its {} the CLI's wildcard.
+	nonAccount := "!" + placeholderRe.ReplaceAllString(accountRelPath, "{}")
 	var out []*CLIUse
 	for _, k := range sortedKeys(inv.Uses) {
 		u := inv.Uses[k]
+		if u.Method == method && len(u.Segs) == 1 && u.Segs[0] == nonAccount {
+			out = append(out, u)
+			continue
+		}
 		if u.Method != method || len(u.Segs) != len(docs) {
 			continue
 		}

@@ -2,6 +2,8 @@
 // and authorization codes are HMAC-signed values. The login itself is Plivo's `plivo login` browser flow
 // with client=mcp, which ends in an stk_ scope token minted by the auth proxy.
 
+import { STK_RE } from "./upstream";
+
 export interface OAuthConfig {
   secret: string;
   loginBase: string;
@@ -10,6 +12,8 @@ export interface OAuthConfig {
   /** Where clients reach this server; it names itself with this in metadata, the issuer and the login cookie. */
   publicOrigin: string;
   fetchImpl?: typeof fetch;
+  /** Counts registrations per caller address. Without it (local runs, tests) registration is not limited. */
+  registerLimiter?: RateLimit;
 }
 
 export const OAUTH_PATHS = new Set([
@@ -20,6 +24,7 @@ export const OAUTH_PATHS = new Set([
   "/authorize",
   "/oauth/callback",
   "/token",
+  "/oauth/revoke",
 ]);
 
 const LOGIN_TTL_SECONDS = 600;
@@ -33,7 +38,25 @@ const MAX_LABEL_CHARS = 128;
 const MAX_SHOWN_HOST_CHARS = 100;
 const MAX_BODY_CHARS = 16_384;
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
-const BLOCKED_SCHEMES = new Set(["javascript:", "data:", "vbscript:", "file:", "blob:", "about:"]);
+// Handled by the browser or the operating system itself, so a redirect to one starts that handler and reaches no MCP
+// app. The list cannot be complete, which is why the consent label always names an app scheme.
+const SYSTEM_SCHEMES = new Set(
+  (
+    "javascript data vbscript file blob about filesystem view-source ftp ftps sftp ws wss chrome chrome-extension chrome-untrusted " +
+    "devtools edge moz-extension safari-extension safari-web-extension resource jar res mhtml mk cid mid urn tag mailto tel sms smsto " +
+    "mms mmsto sip sips callto facetime facetime-audio facetime-group imessage xmpp irc ircs news nntp snews webcal geo maps ssh " +
+    "telnet ldap ldaps smb nfs afp vnc rdp git svn dav davs shell search-ms intent market android-app content itms itms-apps " +
+    "itms-appss itms-services itms-books prefs app-settings shortcuts applescript help x-man-page man magnet bitcoin gopher rtsp rtmp " +
+    "wyciwyg chrome-search isolated-app feed pcast ipp ipps gemini opera brave firefox skype x-callback-url"
+  ).split(" "),
+);
+const SYSTEM_SCHEME_PREFIX = /^(ms-|x-apple|microsoft-edge|web\+)/;
+// An opaque host may hold brackets and other characters that would read as part of the consent label.
+const APP_HOST = /^[a-z0-9._-]*(:\d+)?$/i;
+const MAX_LOGINS_IN_PROGRESS = 5;
+// One login cookie is about 0.6 KB, and up to 3 KB with the longest redirect URI and state; 8 KB is a common limit
+// for all of a request's headers.
+const MAX_LOGIN_COOKIE_BYTES = 6_000;
 
 const enc = new TextEncoder();
 
@@ -124,10 +147,12 @@ function errorPage(message: string): Response {
   return new Response(`Plivo sign-in failed: ${message}\n`, { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-function redirectTo(target: string, params: Record<string, string | undefined>, headers: Record<string, string> = {}): Response {
+function redirectTo(target: string, params: Record<string, string | undefined>, cookies: string[] = []): Response {
   const url = new URL(target);
   for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, v);
-  return new Response(null, { status: 302, headers: { Location: url.toString(), "Cache-Control": "no-store", ...headers } });
+  const headers = new Headers({ Location: url.toString(), "Cache-Control": "no-store" });
+  for (const c of cookies) headers.append("Set-Cookie", c);
+  return new Response(null, { status: 302, headers });
 }
 
 export function redirectUriError(uri: unknown): string | undefined {
@@ -139,16 +164,28 @@ export function redirectUriError(uri: unknown): string | undefined {
     return "is not a URL";
   }
   if (url.hash) return "must not have a fragment";
-  if (BLOCKED_SCHEMES.has(url.protocol)) return `cannot use ${url.protocol}`;
-  if (url.protocol === "http:" && !LOOPBACK.has(url.hostname)) return "may use http only for a loopback address";
+  if (url.protocol === "http:") {
+    if (!LOOPBACK.has(url.hostname)) return "may use http only for a loopback address";
+  } else if (url.protocol !== "https:") {
+    const scheme = url.protocol.slice(0, -1);
+    if (SYSTEM_SCHEMES.has(scheme) || SYSTEM_SCHEME_PREFIX.test(scheme)) return `cannot use ${url.protocol}`;
+    if (!APP_HOST.test(url.host)) return "has a host that is not a plain name";
+  }
   if ([...shownHost(url)].length > MAX_SHOWN_HOST_CHARS) return `has a host longer than ${MAX_SHOWN_HOST_CHARS} characters`;
   return undefined;
 }
 
-const shownHost = (url: URL) => url.host || url.protocol;
+/**
+ * Where the token goes, as the consent screen shows it. An app scheme is always named, so `evil://claude.ai` cannot
+ * read as the website. Never as `scheme://host`: the firewall before the auth proxy blocks URLs in a query value.
+ */
+function shownHost(url: URL): string {
+  if (url.protocol === "https:" || url.protocol === "http:") return url.host;
+  return `${url.protocol} app link${url.host ? ` to ${url.host}` : ""}`;
+}
 
-/** A self-declared client name without the invisible characters that could pad it or reorder what is shown. */
-function cleanName(name: unknown): string {
+/** A name someone else chose, without the invisible characters that could pad it or reorder what is shown. */
+export function cleanName(name: unknown): string {
   if (typeof name !== "string") return "";
   const clean = name.replace(/[\p{C}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/gu, " ").trim();
   return [...clean].slice(0, MAX_NAME_CHARS).join("");
@@ -160,28 +197,29 @@ function cleanName(name: unknown): string {
  */
 export function consentLabel(clientName: string | undefined, redirectUri: string): string {
   const host = shownHost(new URL(redirectUri));
-  const name = [...cleanName(clientName)];
+  // Without brackets of its own, the name cannot close the pair it is shown in and pass as the text after it.
+  const name = [...cleanName(clientName?.replace(/[\p{Ps}\p{Pe}]/gu, ""))];
   if (name.length === 0) return host;
   const room = MAX_LABEL_CHARS - [...host].length - 3;
   return `${host} (${name.length <= room ? name.join("") : `${name.slice(0, room - 1).join("")}…`})`;
 }
 
-function loginCookieName(origin: URL) {
-  return origin.protocol === "https:" ? "__Host-plivo_mcp_login" : "plivo_mcp_login";
+// One cookie per login, so a second sign-in in the same browser does not replace the first.
+function loginCookieName(origin: URL, loginState: string) {
+  return `${origin.protocol === "https:" ? "__Host-" : ""}plivo_mcp_login_${loginState.slice(0, 16)}`;
 }
 
-function readCookie(request: Request, name: string): string | undefined {
-  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
+function cookies(request: Request): [string, string][] {
+  return (request.headers.get("Cookie") ?? "").split(";").map((part) => {
     const [k, ...v] = part.trim().split("=");
-    if (k === name) return v.join("=");
-  }
-  return undefined;
+    return [k, v.join("=")];
+  });
 }
 
 // Lax, so the cookie still arrives when the Console redirects the browser back here.
-function loginCookie(origin: URL, value: string, maxAge: number): string {
+function loginCookie(origin: URL, name: string, value: string, maxAge: number): string {
   const secure = origin.protocol === "https:" ? "; Secure" : "";
-  return `${loginCookieName(origin)}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
 /**
@@ -202,7 +240,69 @@ async function readBody(request: Request): Promise<string | undefined> {
   return text.length > MAX_BODY_CHARS ? undefined : text;
 }
 
+// The limiter's period in wrangler.jsonc.
+const REGISTER_RETRY_SECONDS = 60;
+
+// Loopback and unspecified addresses name no caller, and as keys would be shared by whoever arrives with one.
+function v4Key(parts: number[]): string | undefined {
+  return parts.every((n) => n <= 255) && parts[0] !== 127 && parts.some((n) => n !== 0) ? parts.join(".") : undefined;
+}
+
+/** An address as a limiter key: IPv4 whole, IPv6 by its /64, since one caller usually holds all of a /64. */
+function addressKey(raw: string): string | undefined {
+  const ip = raw.trim().toLowerCase();
+  const v4 = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (v4) return v4Key(v4.slice(1).map(Number));
+  const halves = ip.split("::");
+  if (halves.length > 2 || !/^[0-9a-f:]+$/.test(ip)) return undefined;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return undefined;
+  const hex = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  if (!hex.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return undefined;
+  const groups = hex.map((g) => Number.parseInt(g, 16));
+  // ::ffff:a.b.c.d written in hex is still that IPv4 address.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) return v4Key([groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255]);
+  if (groups.slice(0, 4).every((g) => g === 0)) return undefined;
+  return `${groups.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
+}
+
+/**
+ * Who is registering, as CloudFront saw them. CF-Connecting-IP is never the answer: behind CloudFront it is
+ * CloudFront's own address, and a key shared by every user would lock them all out together.
+ */
+function callerKey(request: Request): string | undefined {
+  // "ip:port"; an IPv6 address comes with or without brackets, and its last group is then the port.
+  const viewer = request.headers.get("CloudFront-Viewer-Address")?.trim();
+  // A dotted address is tried whole first: given without a port, it must not lose its last part as one.
+  const reported = viewer && ((viewer.includes(".") ? addressKey(viewer) : undefined) ?? addressKey(/^\[(.*)\](:\d+)?$/.exec(viewer)?.[1] ?? viewer.replace(/:[^:]*$/, "")));
+  if (reported) return reported;
+  // CloudFront appends the viewer's address; Cloudflare may then append CloudFront's, which is not the caller.
+  const forwarded = (request.headers.get("X-Forwarded-For") ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+  if (forwarded.at(-1) === request.headers.get("CF-Connecting-IP")?.trim()) forwarded.pop();
+  return addressKey(forwarded.at(-1) ?? "");
+}
+
+async function overRegisterLimit(request: Request, limiter: RateLimit | undefined): Promise<boolean> {
+  const key = limiter && callerKey(request);
+  if (!limiter || !key) return false;
+  try {
+    // Only a plain refusal limits: an answer in a shape this code does not know must not turn callers away.
+    return (await limiter.limit({ key })).success === false;
+  } catch (e) {
+    // Sign-in for everyone must not depend on the limiter.
+    console.error(`plivo-mcp: the registration rate limiter failed, so this registration was not counted: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
 async function register(request: Request, cfg: OAuthConfig): Promise<Response> {
+  if (await overRegisterLimit(request, cfg.registerLimiter)) {
+    const res = oauthError("too_many_requests", "too many client registrations from this network address; try again in a minute", 429);
+    res.headers.set("Retry-After", String(REGISTER_RETRY_SECONDS));
+    return res;
+  }
   let body: Record<string, unknown>;
   try {
     body = JSON.parse((await readBody(request)) ?? "") as Record<string, unknown>;
@@ -240,6 +340,10 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
   const client = await unseal<Client>(cfg.secret, "client", clientId);
   if (!client) return errorPage("unknown client_id. Remove this server from your MCP client and add it again.");
   if (!client.redirect_uris.includes(redirectUri)) return errorPage("redirect_uri is not registered for this client.");
+  // A client id never expires, so one sealed under older rules is held to today's.
+  if (redirectUriError(redirectUri)) {
+    return errorPage("this app registered a redirect address that is no longer accepted. Remove this server from your MCP client and add it again.");
+  }
 
   const state = q.get("state") ?? undefined;
   const fail = (error: string, description: string) => redirectTo(redirectUri, { error, error_description: description, state });
@@ -257,6 +361,8 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
   const loginState = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const login: Login = { client_id: clientId, redirect_uri: redirectUri, state, code_challenge: challenge, login_state: loginState, exp: now() + LOGIN_TTL_SECONDS };
   const device = consentLabel(client.client_name, redirectUri);
+  const cookieName = loginCookieName(origin, loginState);
+  const sealed = await seal(cfg.secret, "login", login);
   return redirectTo(
     `${cfg.loginBase}/v1/accounts/cli/authorize`,
     {
@@ -266,18 +372,36 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
       code_challenge_method: "S256",
       device,
     },
-    { "Set-Cookie": loginCookie(origin, await seal(cfg.secret, "login", login), LOGIN_TTL_SECONDS) },
+    [loginCookie(origin, cookieName, sealed, LOGIN_TTL_SECONDS), ...staleLogins(request, origin, cookieName.length + sealed.length + 1)],
   );
+}
+
+/**
+ * Expires the logins in progress that would take the browser past 5 cookies or past the byte limit with the new one,
+ * oldest first (a browser sends its oldest cookies first), and the cookie of the earlier single-login scheme.
+ */
+function staleLogins(request: Request, origin: URL, newBytes: number): string[] {
+  const prefix = loginCookieName(origin, "");
+  const sent = cookies(request).filter(([k]) => /^[\w-]+$/.test(k));
+  const stale = sent.filter(([k]) => k === prefix.slice(0, -1)).map(([k]) => k);
+  let room = MAX_LOGIN_COOKIE_BYTES - newBytes;
+  let kept = 1;
+  for (const [k, v] of sent.filter(([k]) => k.startsWith(prefix)).reverse()) {
+    room -= k.length + v.length + 3;
+    if (room < 0 || ++kept > MAX_LOGINS_IN_PROGRESS) stale.push(k);
+  }
+  return stale.map((k) => loginCookie(origin, k, "", 0));
 }
 
 async function callback(request: Request, origin: URL, cfg: OAuthConfig): Promise<Response> {
   const q = new URL(request.url).searchParams;
-  const login = await unseal<Login>(cfg.secret, "login", readCookie(request, loginCookieName(origin)));
+  const state = q.get("state") ?? "";
+  const login = await unseal<Login>(cfg.secret, "login", cookies(request).find(([k]) => k === loginCookieName(origin, state))?.[1]);
   // The cookie ties the callback to the browser that started the login.
-  if (!login || login.login_state !== q.get("state")) {
+  if (!login || login.login_state !== state) {
     return errorPage("this sign-in link has expired or was opened in another browser. Start again from your MCP client.");
   }
-  const clear = { "Set-Cookie": loginCookie(origin, "", 0) };
+  const clear = [loginCookie(origin, loginCookieName(origin, state), "", 0)];
   const loginCode = q.get("code");
   if (!loginCode) {
     const error = q.get("error") === "access_denied" ? "access_denied" : "server_error";
@@ -337,6 +461,40 @@ async function token(request: Request, cfg: OAuthConfig): Promise<Response> {
   });
 }
 
+/**
+ * RFC 7009: ends the token an app is disconnecting. A token that cannot be one of ours answers 200, as the RFC
+ * asks; one that could be answers 200 only once the auth proxy has dealt with it, so a client is never told a
+ * live token is gone.
+ */
+async function revoke(request: Request, cfg: OAuthConfig): Promise<Response> {
+  const raw = await readBody(request);
+  if (raw === undefined) return oauthError("invalid_request", "body is too large");
+  const tokenValue = new URLSearchParams(raw).get("token");
+  if (!tokenValue) return oauthError("invalid_request", "token is required");
+  const authorization = `Bearer ${tokenValue}`;
+  if (STK_RE.test(authorization)) {
+    let status: number;
+    try {
+      const res = await (cfg.fetchImpl ?? fetch)(`${cfg.loginBase}/v1/accounts/cli/revoke`, {
+        method: "POST",
+        headers: { Authorization: authorization },
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      await res.body?.cancel();
+      status = res.status;
+    } catch {
+      return oauthError("temporarily_unavailable", "Plivo sign-in is unreachable; try again", 503);
+    }
+    // The proxy answers 200 for a live, expired or unknown token alike, and 401 for one it does not take as a token.
+    if (status !== 200 && status !== 401) {
+      console.error(`plivo-mcp: the auth proxy answered ${status} to a token revocation`);
+      return oauthError("temporarily_unavailable", "Plivo could not revoke the token; try again", 503);
+    }
+  }
+  return new Response(null, { status: 200, headers: CORS });
+}
+
 export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<Response> {
   const origin = new URL(cfg.publicOrigin);
   const path = new URL(request.url).pathname;
@@ -351,6 +509,8 @@ export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<R
       authorization_endpoint: `${origin.origin}/authorize`,
       token_endpoint: `${origin.origin}/token`,
       registration_endpoint: `${origin.origin}/register`,
+      revocation_endpoint: `${origin.origin}/oauth/revoke`,
+      revocation_endpoint_auth_methods_supported: ["none"],
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
@@ -362,5 +522,6 @@ export async function handleOAuth(request: Request, cfg: OAuthConfig): Promise<R
   if (request.method === "GET" && path === "/authorize") return authorize(request, origin, cfg);
   if (request.method === "GET" && path === "/oauth/callback") return callback(request, origin, cfg);
   if (request.method === "POST" && path === "/token") return token(request, cfg);
+  if (request.method === "POST" && path === "/oauth/revoke") return revoke(request, cfg);
   return new Response("Method not allowed\n", { status: 405 });
 }

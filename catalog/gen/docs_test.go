@@ -106,6 +106,15 @@ func TestParseDocsLayouts(t *testing.T) {
 			method: "DELETE", path: "/v1/Account/{auth_id}/WhatsApp/Template/{waba_id}/{template_id}/",
 			want: "name:query:string!",
 		},
+		{
+			name: "method in the fence's info string, bare URL inside",
+			src: page("## Numbers\n\n### Add a Number\n\nAdd a number to a pool.\n\n```text POST theme={null}\n" +
+				"https://api.plivo.com/v1/Account/{auth_id}/NumberPool/{number_pool_uuid}/Number/{number}/\n```\n\n" +
+				"#### Arguments\n\n**service** `string`\n\nsms or mms.\n\n```bash cURL\ncurl -X POST https://api.plivo.com/v1/Account/{auth_id}/NumberPool/x/Number/y/\n```\n"),
+			method: "POST", path: "/v1/Account/{auth_id}/NumberPool/{number_pool_uuid}/Number/{number}/",
+			want:  "service:body:string",
+			title: "Add a Number", desc: "Add a number to a pool.",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
