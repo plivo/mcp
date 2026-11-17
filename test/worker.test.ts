@@ -2040,6 +2040,11 @@ function setupDiagnose(record: { status: number; body?: unknown }, chat: { statu
 }
 
 describe("diagnose", () => {
+  it("gives every tool its title in the annotations too, where Claude's directory reads it", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    expect(tools.filter((t) => !t.title || t.annotations?.title !== t.title).map((t) => t.name)).toEqual([]);
+  });
+
   it("is not listed as read-only, since the assistant can file a support ticket", async () => {
     const { tools } = await (await connect(setup().toWorker)).listTools();
     const hints = tools.filter((t) => t.name.startsWith("diagnose_")).map((t) => t.annotations?.readOnlyHint);
