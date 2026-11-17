@@ -270,29 +270,40 @@ function redact(v: unknown, key: string, depth: number): unknown {
  * order and values, so it must not decide what the user sees: required params come first, then documented
  * ones, and values are JSON-escaped so a newline in one cannot forge another line.
  */
-export function describeAction(op: Operation, req: BuiltRequest, extra: string[] = []): string {
+/** Lines the caller adds: what it costs, which account pays, and remarks that may come last. */
+export interface Shown {
+  price?: string[];
+  account?: string[];
+  after?: string[];
+}
+
+const DESTINATIONS = ["dst", "to"];
+
+export function describeAction(op: Operation, req: BuiltRequest, shown: Shown = {}): string {
   const u = new URL(req.url);
   const path = u.pathname.replace(/^.*\/v1\/Account\/[^/]+/, "") || "/";
-  const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)})`, ...approvalReasons(op)];
-  if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
-  lines.push(...extra);
+  // An app may show only the first lines: the warnings, the price and who is reached must be among them.
+  const lines = [`${op.title} (${op.method} ${path}${hideQuerySecrets(u.search)})`, ...approvalReasons(op), ...(shown.price ?? [])];
 
   const body = req.body === undefined ? {} : (JSON.parse(req.body) as Record<string, unknown>);
   // One send or call can fan out to many destinations joined with "<", each billed.
-  for (const k of ["dst", "to"]) {
+  for (const k of DESTINATIONS) {
     const n = typeof body[k] === "string" ? (body[k] as string).split("<").filter((d) => d.trim()).length : 0;
     if (n > 1) lines.push(`${n} recipients (${k}).`);
   }
   const rank = new Map(op.params.map((p, i) => [p.name, p.required ? i : op.params.length + i]));
   const unranked = 2 * op.params.length;
   const names = Object.keys(body).sort((a, b) => (rank.get(a) ?? unranked) - (rank.get(b) ?? unranked) || (a < b ? -1 : a > b ? 1 : 0));
-  for (const k of names) {
+  const param = (k: string) => {
     const v = body[k];
-    const shown = !SECRET_KEY.test(k)
+    const value = !SECRET_KEY.test(k)
       ? JSON.stringify(redact(v, k, 0))
       : typeof v === "string" ? hide(v) : JSON.stringify(hideAll(v, 0));
-    lines.push(`${PLAIN_KEY.test(k) ? k : JSON.stringify(k)}${rank.has(k) ? "" : " (not a documented param)"}: ${shown ?? "null"}`);
-  }
+    return `${PLAIN_KEY.test(k) ? k : JSON.stringify(k)}${rank.has(k) ? "" : " (not a documented param)"}: ${value ?? "null"}`;
+  };
+  const reached = names.filter((k) => DESTINATIONS.includes(k));
+  lines.push(...reached.map(param), ...(shown.account ?? []), ...names.filter((k) => !reached.includes(k)).map(param), ...(shown.after ?? []));
+  if (ASKS_FIRST[op.id] === KEEPS_ACCESS) lines.push("If it is no longer needed later, delete it in the Plivo console.");
   return lines.join("\n");
 }
 
@@ -320,9 +331,9 @@ function textResult(value: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
-function preview(op: Operation, req: BuiltRequest, extra: string[]): { action: string } | { refusal: CallToolResult } {
+function preview(op: Operation, req: BuiltRequest, shown: Shown): { action: string } | { refusal: CallToolResult } {
   try {
-    return { action: describeAction(op, req, extra) };
+    return { action: describeAction(op, req, shown) };
   } catch (e) {
     if (!(e instanceof Unshowable)) throw e;
     return { refusal: textResult(`Nothing was done: this action cannot be shown to the user for approval, because ${e.message}. Make the change in the Plivo console.`, true) };
@@ -330,28 +341,23 @@ function preview(op: Operation, req: BuiltRequest, extra: string[]): { action: s
 }
 
 const APPROVE_KEY = "approve";
-const DECISION = "decision";
-const APPROVE = "Approve";
-const DENY = "Deny";
-// A plain enum is the oldest single-choice form in the elicitation spec, so the most clients render it (titled oneOf
-// options came later). Required with no default, so a form submitted untouched carries no decision.
-const APPROVAL_SCHEMA = {
-  type: "object" as const,
-  properties: { [DECISION]: { type: "string" as const, title: "Your decision", enum: [APPROVE, DENY] } },
-  required: [DECISION],
-};
+// No field of ours: the app's own Accept and Decline are the decision, so approving is one step.
+const NO_FIELDS = { type: "object" as const, properties: {} };
+const HOW_TO_ANSWER = "Accept to approve. Decline to cancel.";
 
 const ASK_USER = "Tell the user, and call again only if they ask for it.";
 
-function notApproved(answer: ReturnType<typeof inputResponse>): string {
+type Answer = ReturnType<typeof inputResponse>;
+
+// Content means the answer is to another form, such as the Approve/Deny choice this dialog once had, where an
+// accept could carry "Deny".
+const accepted = (answer: Answer) => answer.kind === "elicit" && answer.action === "accept" && Object.keys(answer.content ?? {}).length === 0;
+
+function notApproved(answer: Answer): string {
   if (answer.kind !== "elicit") return `Nothing was done: the approval dialog returned no answer. ${ASK_USER}`;
-  const denied = answer.action === "decline" || (answer.action === "accept" && answer.content?.[DECISION] === DENY);
-  if (denied) return `Nothing was done: the user chose to deny this action. ${ASK_USER}`;
+  if (answer.action === "decline") return `Nothing was done: the user chose to deny this action. ${ASK_USER}`;
   if (answer.action === "cancel") return `Nothing was done: the approval dialog was cancelled or dismissed without a decision. ${ASK_USER}`;
-  return (
-    `Nothing was done: the approval dialog was submitted without choosing ${APPROVE} or ${DENY}, which does not approve. ` +
-    `Tell the user that approving means selecting ${APPROVE} in the dialog before submitting it, and call again only if they ask for it.`
-  );
+  return `Nothing was done: the approval dialog's answer was not one this server takes as approval. Call again to ask the user again, only if they ask for it.`;
 }
 
 /** Form-mode elicitation, declared on this 2026-07-28 request; a 2025-era request carries no envelope. */
@@ -371,7 +377,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
     return {
       approved: false,
       result: inputRequired({
-        inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n\nApprove this action?`, requestedSchema: APPROVAL_SCHEMA }) },
+        inputRequests: { [APPROVE_KEY]: inputRequired.elicit({ message: `${action}\n${HOW_TO_ANSWER}`, requestedSchema: NO_FIELDS }) },
         requestState: await c.code.mint({ d, k: "elicit", n: crypto.randomUUID(), o: account }, ctx),
       }),
     };
@@ -386,7 +392,7 @@ async function askUser(c: Confirmer, ctx: ServerContext, d: string, action: stri
   const moved = wrongAccount(p, account);
   if (moved) return { approved: false, result: moved };
   const answer = inputResponse(ctx.mcpReq.inputResponses, APPROVE_KEY);
-  if (answer.kind === "elicit" && answer.action === "accept" && answer.content?.[DECISION] === APPROVE) return spend(c, ctx, p);
+  if (accepted(answer)) return spend(c, ctx, p);
   return { approved: false, result: textResult(notApproved(answer), true) };
 }
 
@@ -446,12 +452,12 @@ export async function confirmGate(
   op: Operation,
   req: BuiltRequest,
   code: string | undefined,
-  extra: string[],
+  shown: Shown,
   account: string,
 ): Promise<Gate> {
-  const shown = preview(op, req, extra);
-  if ("refusal" in shown) return { approved: false, result: shown.refusal };
-  return approvalGate(c, ctx, req, shown.action, code, account);
+  const made = preview(op, req, shown);
+  if ("refusal" in made) return { approved: false, result: made.refusal };
+  return approvalGate(c, ctx, req, made.action, code, account);
 }
 
 /**
