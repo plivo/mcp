@@ -313,7 +313,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     {
       title: "Call a read-only Plivo API operation",
       description:
-        "Call a GET operation from the catalog (list or retrieve messages, calls, numbers, recordings, and more). " +
+        "Call a GET operation of the Plivo REST API (https://plivo.com/docs) from the catalog (list or retrieve " +
+        "messages, calls, numbers, recordings, and more). " +
         "Lookups that cost money need the user's approval first; plivo_api_details lists them as needs_approval.",
       inputSchema: callInput,
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -326,7 +327,8 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     {
       title: "Call a Plivo API operation that changes data",
       description:
-        "Call a POST, PATCH or DELETE operation from the catalog. Operations that cost money (sending messages, " +
+        "Call a POST, PATCH or DELETE operation of the Plivo REST API (https://plivo.com/docs) from the catalog. " +
+        "Operations that cost money (sending messages, " +
         "making calls, buying numbers), cannot be undone, create SIP access, reroute calls and messages or change an AI " +
         "agent need the user's approval first; plivo_api_details lists the reasons as needs_approval.",
       inputSchema: callInput,
