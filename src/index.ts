@@ -43,6 +43,8 @@ export interface Env {
    * Worker adds; the Worker's own workers.dev address then answers no one else. Unset or empty checks nothing.
    */
   EDGE_SECRET?: string;
+  /** Rate limit for /register, per caller address; the binding and its numbers are in wrangler.jsonc. */
+  REGISTER_LIMITER?: RateLimit;
 }
 
 const EDGE_SECRET_HEADER = "X-Plivo-Edge-Secret";
@@ -180,6 +182,7 @@ export function createWorker(plainFetch?: typeof fetch) {
           clientSecret: env.MCP_CLIENT_SECRET!,
           publicOrigin,
           fetchImpl,
+          registerLimiter: env.REGISTER_LIMITER,
         });
       }
       if (url.pathname !== "/mcp") {
