@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "plivo": {
+      "url": "https://mcp.plivo.com/mcp"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "plivo",
+  "description": "Send SMS and WhatsApp messages, make calls, manage phone numbers and call the Plivo API on your own Plivo account. Anything that costs money or can't be undone asks for your approval first.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Plivo"
+  },
+  "homepage": "https://mcp.plivo.com/",
+  "repository": "https://github.com/plivo/mcp",
+  "license": "Apache-2.0",
+  "keywords": ["plivo", "sms", "whatsapp", "voice", "phone numbers", "telephony"],
+  "logo": "assets/logo.svg"
+}
