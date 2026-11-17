@@ -482,8 +482,11 @@ describe("the rate limit on client registration", () => {
     ["the /64 of an IPv6 address CloudFront reports", { "CloudFront-Viewer-Address": "2001:db8:85a3:8d3:1319:8a2e:370:7348:46532" }, "2001:db8:85a3:8d3::/64"],
     ["the same /64 for a neighbour, written in brackets and capitals", { "CloudFront-Viewer-Address": "[2001:DB8:85A3:08D3::1]:443" }, "2001:db8:85a3:8d3::/64"],
     ["another /64 for another network", { "CloudFront-Viewer-Address": "2001:db8:85a3:8d4::1:46532" }, "2001:db8:85a3:8d4::/64"],
+    ["an IPv6 address whose port could pass as its last group", { "CloudFront-Viewer-Address": "2001:db8::8d3:1:2:3:443" }, "2001:db8:0:0::/64"],
     ["a short IPv6 address whose last group is the port", { "CloudFront-Viewer-Address": "2001:db8::1:46532" }, "2001:db8:0:0::/64"],
     ["an IPv4 address carried in IPv6 form", { "CloudFront-Viewer-Address": "[::ffff:198.51.100.10]:46532" }, "198.51.100.10"],
+    ["an IPv4 address in IPv6 form with no port", { "CloudFront-Viewer-Address": "::ffff:198.51.100.10" }, "198.51.100.10"],
+    ["an IPv4 address in IPv6 form written in hex", { "CloudFront-Viewer-Address": "[::ffff:c633:640a]:5" }, "198.51.100.10"],
     ["CloudFront's report over anything in X-Forwarded-For", { "CloudFront-Viewer-Address": "198.51.100.10:1", "X-Forwarded-For": "203.0.113.9" }, "198.51.100.10"],
     ["the last X-Forwarded-For address, which CloudFront appended, when it reports none", { "X-Forwarded-For": "10.0.0.1, 203.0.113.9,198.51.100.10" }, "198.51.100.10"],
     ["the address before CloudFront's own, when Cloudflare has appended that", { "X-Forwarded-For": "10.0.0.1,198.51.100.10,130.176.0.5", "CF-Connecting-IP": "130.176.0.5" }, "198.51.100.10"],
@@ -499,6 +502,12 @@ describe("the rate limit on client registration", () => {
     ["only CF-Connecting-IP, which is CloudFront's address and the same for everyone", { "CF-Connecting-IP": "130.176.0.5" }],
     ["an X-Forwarded-For that holds only CloudFront's own address", { "X-Forwarded-For": "130.176.0.5", "CF-Connecting-IP": "130.176.0.5" }],
     ["no address at all", {}],
+    ["the IPv6 loopback address", { "CloudFront-Viewer-Address": "[::1]:5" }],
+    ["the IPv6 unspecified address", { "CloudFront-Viewer-Address": "[::]:5" }],
+    ["an IPv6 address whose first 64 bits are zero", { "X-Forwarded-For": "::1234:5678" }],
+    ["an IPv4 loopback address", { "CloudFront-Viewer-Address": "127.0.0.9:5" }],
+    ["an IPv4 loopback address in IPv6 hex form", { "CloudFront-Viewer-Address": "[::ffff:7f00:1]:5" }],
+    ["the IPv4 unspecified address", { "X-Forwarded-For": "0.0.0.0" }],
     ["an address that is not one", { "CloudFront-Viewer-Address": "unknown:1", "X-Forwarded-For": "999.1.1.1" }],
   ])("does not limit a request with %s", async (_, headers) => {
     const { keys, REGISTER_LIMITER } = limiter(async () => ({ success: false }));
@@ -512,6 +521,15 @@ describe("the rate limit on client registration", () => {
     expect(res.status).toBe(429);
     expect(Object.fromEntries(res.headers)).toMatchObject({ "retry-after": "60", "cache-control": "no-store", "access-control-allow-origin": "*", "content-type": "application/json" });
     expect(await res.json()).toMatchObject({ error: "too_many_requests", error_description: expect.stringContaining("try again in a minute") });
+  });
+
+  it.each<[string, unknown]>([
+    ["an empty answer", {}],
+    ["an answer without a decision", { success: undefined }],
+  ])("registers when the limiter gives %s", async (_, answer) => {
+    const { keys, REGISTER_LIMITER } = limiter(async () => answer as { success: boolean });
+    expect((await register({ REGISTER_LIMITER }, { "CloudFront-Viewer-Address": "198.51.100.10:46532" })).status).toBe(201);
+    expect(keys).toHaveLength(1);
   });
 
   it("registers anyway when the limiter fails, and says so once", async () => {
