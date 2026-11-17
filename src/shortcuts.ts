@@ -107,7 +107,7 @@ export interface Shortcut {
   kind: "read" | "write";
   description: string;
   inputSchema: z.ZodObject;
-  annotations: { readOnlyHint: boolean; destructiveHint?: boolean; openWorldHint: boolean };
+  annotations: { readOnlyHint: boolean; destructiveHint: boolean; openWorldHint: boolean };
   toCall(args: Record<string, unknown>): CallArgs & { id: string; confirmation_code?: string };
 }
 
@@ -191,8 +191,9 @@ export function buildShortcuts(defs: ShortcutDef[]): Shortcut[] {
         : z.strictObject(shape),
       annotations:
         kind === "read"
-          ? { readOnlyHint: true, openWorldHint: true }
-          : { readOnlyHint: false, destructiveHint: op.destructive, openWorldHint: true },
+          ? { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
+          : // A send, call or purchase cannot be taken back, which counts as destructive.
+            { readOnlyHint: false, destructiveHint: op.destructive || op.costs_money, openWorldHint: true },
       toCall(args) {
         const path_params: Record<string, string | number> = {};
         const params: Record<string, unknown> = {};

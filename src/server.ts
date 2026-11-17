@@ -264,7 +264,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         query: z.string().min(1).max(300).describe("What you want to do, in plain words"),
         limit: z.number().int().min(1).max(20).optional().describe("Max results (default 8)"),
       }),
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ query, limit }) => {
       const hits = searchOperations(query, limit ?? 8);
@@ -284,7 +284,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         query: z.string().min(1).max(300).describe('What you want to know, e.g. "Speak XML", "SMS error code 30", "10DLC registration"'),
         limit: z.number().int().min(1).max(10).optional().describe("Max sections (default 5)"),
       }),
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ query, limit }) => {
       const hits = searchDocs(query, limit ?? 5);
@@ -299,7 +299,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       title: "Describe a Plivo API operation",
       description: "Get an operation's params (name, type, required, description), path params, and whether it costs money. Call before plivo_api_read or plivo_api_write.",
       inputSchema: z.object({ id: z.string().describe('Operation id from plivo_api_search, e.g. "POST /Message/"') }),
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async ({ id }) => {
       const op = getOperation(id);
@@ -317,7 +317,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "messages, calls, numbers, recordings, and more). " +
         "Lookups that cost money need the user's approval first; plivo_api_details lists them as needs_approval.",
       inputSchema: callInput,
-      annotations: { readOnlyHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     async (args, reqCtx) => call("read", args, reqCtx),
   );
@@ -377,7 +377,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
       title: "List organizations",
       description: "List the organizations this connection may use and which one is current.",
       inputSchema: z.strictObject({}),
-      annotations: { readOnlyHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     },
     async () => {
       if (!caller) return text("This request has no Plivo credentials.", true);

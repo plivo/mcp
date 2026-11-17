@@ -186,7 +186,7 @@ describe("OAuth sign-in", () => {
     const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: CLIENT_CB, state: "s1", code_challenge: await s256("v".repeat(43)), code_challenge_method: "S256" });
     const auth = await t.send(`/authorize?${q}`);
     const back = await t.send(`/oauth/callback?state=${location(auth).searchParams.get("state")}&error=access_denied`, { headers: { Cookie: cookieOf(auth) } });
-    expect(Object.fromEntries(location(back).searchParams)).toEqual({ error: "access_denied", state: "s1" });
+    expect(Object.fromEntries(location(back).searchParams)).toEqual({ error: "access_denied", state: "s1", iss: ORIGIN });
   });
 
   it.each([
@@ -323,7 +323,8 @@ describe("behind a proxy that forwards the Worker's own host", () => {
     const challenge = await s256("v".repeat(43));
     const authorize = (resource: string) =>
       t.send(`/authorize?${new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: CLIENT_CB, state: "s1", code_challenge: challenge, code_challenge_method: "S256", resource })}`);
-    expect(location(await authorize(`${ORIGIN}/mcp`)).searchParams.get("error")).toBe("invalid_target");
+    const refused = location(await authorize(`${ORIGIN}/mcp`)).searchParams;
+    expect([refused.get("error"), refused.get("iss")]).toEqual(["invalid_target", PUBLIC]);
     const auth = await authorize(`${PUBLIC}/mcp`);
     expect(`${location(auth).origin}${location(auth).pathname}`).toBe(`${LOGIN}/v1/accounts/cli/authorize`);
     expect(auth.headers.get("Set-Cookie")).toMatch(/^__Host-plivo_mcp_login_[\w-]{16}=[^;]+; .*; Secure$/);
