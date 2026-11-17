@@ -5,7 +5,12 @@ The hosted [Model Context Protocol](https://modelcontextprotocol.io) server for 
 
 It runs as a stateless Cloudflare Worker. It never holds Plivo credentials: each call carries the user's
 scoped `stk_` token to Plivo's auth proxy (`/v1/proxy`), which checks the token's scope and swaps in the account's
-Auth ID and Auth Token.
+Auth ID and Auth Token. For the proxy's logs, each call also carries a fresh `X-Request-Id`, the MCP app's
+`User-Agent` as `X-MCP-Client`, the connecting IP as `X-MCP-Client-IP` and the inbound `X-Forwarded-For` as
+`X-MCP-Forwarded-For`: CloudFront sits in front of the Worker, so the connecting IP is its edge and the caller's own
+address is only in the forwarded list.
+
+Opened in a browser, `https://mcp.plivo.com/` serves a landing page (`src/landing.ts`); other clients get one plain line.
 
 ```
 MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer stk_──▶ auth proxy /v1/proxy ──Basic──▶ api.plivo.com
@@ -20,18 +25,40 @@ MCP client ──Bearer stk_──▶ mcp.plivo.com (this Worker) ──Bearer s
 | `plivo_api_read` | Call a `GET` operation |
 | `plivo_api_write` | Call a `POST` / `PATCH` / `DELETE` operation |
 | `search_docs` | Search Plivo's guides and reference: how something works, Plivo XML, error codes, FAQs |
+| `diagnose_call` | Ask Plivo's support assistant what happened on a call, from traces the API does not expose |
+| `diagnose_message` | Ask Plivo's support assistant why a message failed or what its status means |
+| `list_organizations` | List the organizations the connection may use, which one is current, and the access it was given at sign-in |
+| `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
 `get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
 catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
 catalog, and the Worker refuses to start if a listed operation or param is missing from it.
 
+The diagnose tools first check that the call or message is on the account, then send only its id to the auth proxy,
+which asks Plivo's support assistant a fixed question and streams the answer back (30 seconds to 2 minutes for a
+call). The assistant is told not to file a support ticket or change the account; the result says if it tried
+(`src/diagnose.ts`). Because it can still file one, the tools are not marked read-only. They need the auth proxy, so
+they refuse Basic auth.
+
+Every reply from Plivo has its credential fields replaced with `[hidden]` before the model sees it, at any depth and
+on reads and writes alike (`hideSecrets` in `src/upstream.ts`): a field named like a password, secret, token, key,
+bearer, JWT, authorization or cookie, and the `value` beside such a `name` in a list of headers. An endpoint read, for
+one, returns the SIP password. Only a value that could be a credential is hidden: cursors (`next_page_token`),
+counts (`prompt_tokens`), booleans, state fields (`authorization_status`), error reasons, JSON Schemas and the
+`***REDACTED***` placeholder Plivo sends for a stored agent secret all stay. A write that carries `[hidden]` back under
+a secret-named field is refused, so the marker can never replace a real credential. A reply cut at
+the 1 MB limit that names a secret is not shown at all. Reads that return text from outside the account (messages,
+calls, recordings, caller names, verification sessions, AI agents and their runs, and the diagnose tools) carry a
+`note` telling the model to treat that text as data (`UNTRUSTED_NOTE` in `src/server.ts`).
+
 ## Confirmation
 
-Writes that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
-approval, whichever tool makes them (`src/confirm.ts`). So do 16 free writes that keep working after the token
-is revoked or send traffic elsewhere: SIP endpoints, credentials, IP lists and trunks, origination URIs,
-creating an application, pointing a number, application or Powerpack somewhere new, and transferring a live call (`ASKS_FIRST` in
+Calls that cost money or cannot be undone (`costs_money` / `destructive` in the catalog) need the user's
+approval, whichever tool makes them (`src/confirm.ts`); that includes the number and caller-name lookups, which only
+read. So do free writes that keep working after the token is revoked or send traffic elsewhere: SIP endpoints,
+credentials, IP lists and trunks, origination URIs, creating an application, pointing a number, application or
+Powerpack somewhere new, adding a number to a Powerpack, changing an AI agent, and transferring a live call (`ASKS_FIRST` in
 `src/confirm.ts`). The preview hides any field named like a password or secret. The first call sends nothing and returns
 `confirmation_required`: a preview of the action and a `confirmation_code`, valid for 5 minutes, bound to the
 caller and to the exact method, URL and body. The model asks the user, and once they say yes, calls again with
@@ -41,6 +68,42 @@ The server trusts the model to actually ask; what it enforces is that only the p
 same caller, while the code is fresh. Being stateless, a code can be reused for that same request until it
 expires. `CONFIRMATION_MODE` is `confirm` (default; needs `CONFIRM_SECRET`, 32+ characters), `block` (refuse such
 writes), or `allow` (send them unasked; refused unless `PLIVO_API_BASE` is on localhost).
+
+Every approval names the account it will run on (Auth ID and name) and is kept with that Auth ID. The account is
+read again when the answer arrives, and the request is sent only if the connection is still on that account. An
+approved request is addressed to that Auth ID rather than `me`, so the auth proxy itself refuses it if a switch lands
+after the check (the Lookup paths carry no Auth ID, so there the check alone decides). A token without the account permission is named from the organizations route instead; if Plivo
+cannot say which account the connection is on, nothing is asked or sent.
+
+## Organizations
+
+A user who belongs to several organizations ticks, at sign-in, the ones the connection may use. The token starts on
+the sign-in organization, and the auth proxy runs every call on the token's current organization, so the other tools
+take no organization parameter. `list_organizations` lists the allowed organizations
+(`GET /v1/proxy/mcp/organizations`). `switch_organization` takes an Auth ID from that list, asks the user, naming both
+organizations, and then moves the token (`POST /v1/proxy/mcp/organization`). The Worker keeps nothing: it reads the
+current organization from the proxy on each call. A switch applies to calls made after it returns, so a call sent
+alongside it may run on either organization.
+
+A switch between an approval's question and its answer voids that approval. An organization outside the list is a
+plain tool error; changing the list takes a new sign-in.
+
+## Permissions
+
+On the sign-in screen the user can set Access to Read-only or Custom instead of Full access. Custom gives each of
+8 areas (Account, Phone numbers, Messages, ...) a level: No access, Read-only, or Read and write. The auth proxy stores
+the result as a subset of its 17 permissions (its modules, such as `message.send`) for the whole connection. The proxy enforces the choice; the Worker only reports it
+and keeps nothing about it.
+
+- A call the proxy refuses with `errors.error: "permission_not_granted"` is a plain tool error. It names the
+  area and the level the action needs (`src/permissions.ts`) and says to reconnect the server and set it. It is not a
+  sign-in challenge. A 403 with `required_module` alone still is: that token predates the module.
+- `list_organizations` adds `permissions`: full access, or each area's level.
+- Before asking the user to approve an action, the Worker reads the permissions from the organizations route,
+  alongside the account read, and refuses at once if the action's permission is off. Only the question does this:
+  plain reads, writes that need no approval and the call that carries the answer add no request. If the proxy
+  reports no permissions or cannot be read, the question is asked as before.
+- Tools are not hidden from `tools/list`.
 
 ## Sign-in
 
@@ -58,6 +121,13 @@ refresh token, so a client signs in again when it expires. A 401 from `/mcp` car
 `WWW-Authenticate: Bearer resource_metadata=…`, which is how clients find the sign-in. Setting
 `PLIVO_LOGIN_BASE` turns this on; `OAUTH_SECRET` must then be at least 32 characters.
 
+A redirect URI may be `https`, `http` on a loopback address, or an app's own scheme (`cursor://`, `vscode://`,
+`com.example.app:/…`). Schemes the browser or the operating system handles itself (`ftp`, `tel`, `mailto`, `ms-…`,
+`chrome-extension` and the like) are refused at `/register`, and again at `/authorize` for a client id issued before
+the rule. The consent screen names the redirect host first; for an app scheme it reads `cursor: app link to <host>`,
+so an app link can never look like a website. Each login in progress has its own cookie, so several sign-ins can run
+in one browser; at most 5 are kept (fewer when their cookies would pass 6 KB together), and each lasts 10 minutes.
+
 Redeeming a login code also sends `MCP_CLIENT_SECRET`, which must equal the auth proxy's `mcp_client_secret`
 (32+ characters), so only this Worker can turn an MCP login into a token. When the auth proxy refuses a token that
 expired or was revoked (its 401 says `error="invalid_token"`), the tool call gets the same HTTP 401, and the client signs
@@ -71,6 +141,35 @@ Behind a proxy that forwards the Worker's own Host (CloudFront in front of the w
 to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
 cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<PUBLIC_ORIGIN>/oauth/callback`.
 
+### Registration rate limit
+
+`/register` is open to anyone, as MCP requires, so it is rate limited per caller address with a Workers Rate Limiting
+binding (`REGISTER_LIMITER` in `wrangler.jsonc`): 20 registrations a minute, after which the caller gets a 429 with
+`Retry-After: 60`. The caller is the address in CloudFront's `CloudFront-Viewer-Address` header, or failing that the
+address CloudFront appended to `X-Forwarded-For`; an IPv6 caller is counted by its /64. `CF-Connecting-IP` is never
+used, because behind CloudFront it is CloudFront's address. This is only sound while `EDGE_SECRET` is set (below):
+otherwise anyone could reach the Worker directly and send those headers themselves. Counts are kept per Cloudflare
+location and are approximate. Without the binding, without an address, or if the limiter fails, registration is not
+limited. To change the numbers, edit `limit` and `period` (10 or 60 seconds) in `wrangler.jsonc` and deploy.
+
+### Closing the workers.dev address
+
+CloudFront reaches the Worker on its workers.dev name, and so can anyone else, skipping whatever CloudFront enforces.
+`EDGE_SECRET` closes that: when it is set, the Worker answers 403 to every request that does not carry the same value
+in the `X-Plivo-Edge-Secret` header, before it does anything else. Unset (or empty), nothing is checked, so the code
+is safe to deploy first. A value under 32 characters makes every request fail with 500.
+
+Roll it out in this order; step 2 before step 1 takes the server down for everyone:
+
+1. In CloudFront, add a custom header named `X-Plivo-Edge-Secret` on the Worker origin, holding a random value of
+   32+ characters, and wait until the distribution is deployed. CloudFront overwrites a header of that name sent by
+   a client.
+2. Set the same value on the Worker: `npx wrangler secret put EDGE_SECRET`.
+3. Check that `https://mcp.plivo.com/` still answers 200 and the workers.dev address answers 403.
+
+To undo, or to change the value: `npx wrangler secret delete EDGE_SECRET` first, then change CloudFront, then set the
+new value. The check is off in between.
+
 `catalog/proxy-routes.json` is the auth proxy's allow-list for these tokens, one route per catalog operation.
 `npm run catalog` rewrites it; copy it to the proxy's `config/mcpProxyRoutes.json` whenever it changes.
 
@@ -81,7 +180,7 @@ cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<
 - Plivo's docs export (`llms-full.txt`): params, types, required flags, descriptions
 - plivo-cli's source: which endpoints to expose (the CLI's surface) and which spend money (`guardSpend`)
 - `catalog/overrides.json`: reviewed decisions, each with a reason, and `extra_ops`: operations the CLI calls that the
-  docs do not describe (the Agents API), written from the CLI's commands and the server's validation
+  docs do not describe (the Agents API, CNAM lookups), written from the CLI's commands and the server's validation
 
 Each run also writes `catalog/REVIEW.md`: what was included and why, what was excluded, new scope modules
 the auth proxy needs, pricing to confirm, and param names where the docs and the SDKs disagree. The build fails on a
@@ -107,7 +206,8 @@ npm run typecheck
 
 To run the Worker against `api.plivo.com`, copy `.dev.vars.example` to `.dev.vars`, fill in `CONFIRM_SECRET`, and `npm run dev`, then
 point an MCP client at `http://localhost:8787/mcp` with an `Authorization: Basic <auth_id:auth_token>` header.
-Basic auth is for local development only; production accepts `stk_` tokens alone.
+Basic auth is for local development only; production accepts `stk_` tokens alone. Number lookups need the auth
+proxy's `/v1/Lookup/` route, so they fail under Basic auth.
 
 ## Deploy
 

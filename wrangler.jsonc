@@ -10,9 +10,14 @@
     "PLIVO_LOGIN_BASE": "https://hodor.plivo.com",
     "ALLOW_BASIC_AUTH": "false",
     "CONFIRMATION_MODE": "confirm"
-  }
+  },
+  // /register is open to anyone by the MCP spec, so it is slowed down per caller address: `limit` registrations per
+  // `period` seconds (10 or 60 only). Counts are kept per Cloudflare location and are approximate. namespace_id is ours
+  // to choose; another limiter on this account with the same id would share these counts.
+  "ratelimits": [{ "name": "REGISTER_LIMITER", "namespace_id": "7458", "simple": { "limit": 20, "period": 60 } }]
   // Secrets, not vars (`wrangler secret put <NAME>`): CONFIRM_SECRET, OAUTH_SECRET and MCP_CLIENT_SECRET (the auth
   // proxy's mcp_client_secret), at least 32 characters each,
   // and ALLOWED_HOSTS (the Host values the Worker accepts) and PUBLIC_ORIGIN (the origin clients use when a proxy
-  // forwards the Worker's own Host), kept out of this public repo until launch.
+  // forwards the Worker's own Host), kept out of this public repo until launch. EDGE_SECRET is optional: set it only
+  // after that proxy sends it (README, "Closing the workers.dev address").
 }
