@@ -192,6 +192,10 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
         "Every call runs on the connection's current organization; list_organizations shows it and switch_organization changes it.",
     },
   );
+  // Claude's directory reads the title from annotations.title and flags a tool that has only the top-level one.
+  const register = server.registerTool.bind(server);
+  server.registerTool = ((...[name, config, cb]: Parameters<typeof register>) =>
+    register(name, { ...config, annotations: { ...config.annotations, title: config.title } }, cb)) as typeof register;
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
 
   async function call(kind: "read" | "write", args: z.infer<typeof callInput>, reqCtx: ServerContext) {
