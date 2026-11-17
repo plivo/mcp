@@ -2,7 +2,7 @@ import { McpServer, type McpRequestContext, type ServerContext } from "@modelcon
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import * as z from "zod/v4";
 import { getOperation, type Operation } from "./catalog";
-import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, MOVED, nameAccount, type Confirmer, type Shown } from "./confirm";
+import { approvalGate, approvalReasons, canElicit, confirmationCodeField, confirmGate, LINE_BREAK, MOVED, nameAccount, type Confirmer, type Shown } from "./confirm";
 import { diagnose, diagnoseTools } from "./diagnose";
 import { searchDocs } from "./docs";
 import { searchOperations } from "./search";
@@ -352,11 +352,11 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     if (config.confirmationMode === "confirm") {
       if (!config.confirmer) return text("Confirmation is not configured on this server.", true);
       const action = [
-        "Switch organization",
+        "Switch organization.",
         "Every later action on this connection will run on the new organization, until the next switch.",
         `From: ${nameAccount(from.name, from.auth_id)}.`,
         `To: ${nameAccount(to.name, to.auth_id)}.`,
-      ].join("\n");
+      ].join(LINE_BREAK);
       const gate = await approvalGate(config.confirmer, reqCtx, req, action, args.confirmation_code, from.auth_id);
       if (!gate.approved) return gate.result;
     }
