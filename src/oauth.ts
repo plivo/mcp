@@ -12,6 +12,8 @@ export interface OAuthConfig {
   /** Where clients reach this server; it names itself with this in metadata, the issuer and the login cookie. */
   publicOrigin: string;
   fetchImpl?: typeof fetch;
+  /** Counts registrations per caller address. Without it (local runs, tests) registration is not limited. */
+  registerLimiter?: RateLimit;
 }
 
 export const OAUTH_PATHS = new Set([
@@ -238,7 +240,69 @@ async function readBody(request: Request): Promise<string | undefined> {
   return text.length > MAX_BODY_CHARS ? undefined : text;
 }
 
+// The limiter's period in wrangler.jsonc.
+const REGISTER_RETRY_SECONDS = 60;
+
+// Loopback and unspecified addresses name no caller, and as keys would be shared by whoever arrives with one.
+function v4Key(parts: number[]): string | undefined {
+  return parts.every((n) => n <= 255) && parts[0] !== 127 && parts.some((n) => n !== 0) ? parts.join(".") : undefined;
+}
+
+/** An address as a limiter key: IPv4 whole, IPv6 by its /64, since one caller usually holds all of a /64. */
+function addressKey(raw: string): string | undefined {
+  const ip = raw.trim().toLowerCase();
+  const v4 = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (v4) return v4Key(v4.slice(1).map(Number));
+  const halves = ip.split("::");
+  if (halves.length > 2 || !/^[0-9a-f:]+$/.test(ip)) return undefined;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return undefined;
+  const hex = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  if (!hex.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return undefined;
+  const groups = hex.map((g) => Number.parseInt(g, 16));
+  // ::ffff:a.b.c.d written in hex is still that IPv4 address.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) return v4Key([groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255]);
+  if (groups.slice(0, 4).every((g) => g === 0)) return undefined;
+  return `${groups.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
+}
+
+/**
+ * Who is registering, as CloudFront saw them. CF-Connecting-IP is never the answer: behind CloudFront it is
+ * CloudFront's own address, and a key shared by every user would lock them all out together.
+ */
+function callerKey(request: Request): string | undefined {
+  // "ip:port"; an IPv6 address comes with or without brackets, and its last group is then the port.
+  const viewer = request.headers.get("CloudFront-Viewer-Address")?.trim();
+  // A dotted address is tried whole first: given without a port, it must not lose its last part as one.
+  const reported = viewer && ((viewer.includes(".") ? addressKey(viewer) : undefined) ?? addressKey(/^\[(.*)\](:\d+)?$/.exec(viewer)?.[1] ?? viewer.replace(/:[^:]*$/, "")));
+  if (reported) return reported;
+  // CloudFront appends the viewer's address; Cloudflare may then append CloudFront's, which is not the caller.
+  const forwarded = (request.headers.get("X-Forwarded-For") ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+  if (forwarded.at(-1) === request.headers.get("CF-Connecting-IP")?.trim()) forwarded.pop();
+  return addressKey(forwarded.at(-1) ?? "");
+}
+
+async function overRegisterLimit(request: Request, limiter: RateLimit | undefined): Promise<boolean> {
+  const key = limiter && callerKey(request);
+  if (!limiter || !key) return false;
+  try {
+    // Only a plain refusal limits: an answer in a shape this code does not know must not turn callers away.
+    return (await limiter.limit({ key })).success === false;
+  } catch (e) {
+    // Sign-in for everyone must not depend on the limiter.
+    console.error(`plivo-mcp: the registration rate limiter failed, so this registration was not counted: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
 async function register(request: Request, cfg: OAuthConfig): Promise<Response> {
+  if (await overRegisterLimit(request, cfg.registerLimiter)) {
+    const res = oauthError("too_many_requests", "too many client registrations from this network address; try again in a minute", 429);
+    res.headers.set("Retry-After", String(REGISTER_RETRY_SECONDS));
+    return res;
+  }
   let body: Record<string, unknown>;
   try {
     body = JSON.parse((await readBody(request)) ?? "") as Record<string, unknown>;

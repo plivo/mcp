@@ -141,6 +141,17 @@ Behind a proxy that forwards the Worker's own Host (CloudFront in front of the w
 to the address clients use, e.g. `https://mcp.plivo.com`. The metadata, the issuer, the 401 challenge and the login
 cookie then name that origin, and the auth proxy's `mcp_callback_url` must be `<PUBLIC_ORIGIN>/oauth/callback`.
 
+### Registration rate limit
+
+`/register` is open to anyone, as MCP requires, so it is rate limited per caller address with a Workers Rate Limiting
+binding (`REGISTER_LIMITER` in `wrangler.jsonc`): 20 registrations a minute, after which the caller gets a 429 with
+`Retry-After: 60`. The caller is the address in CloudFront's `CloudFront-Viewer-Address` header, or failing that the
+address CloudFront appended to `X-Forwarded-For`; an IPv6 caller is counted by its /64. `CF-Connecting-IP` is never
+used, because behind CloudFront it is CloudFront's address. This is only sound while `EDGE_SECRET` is set (below):
+otherwise anyone could reach the Worker directly and send those headers themselves. Counts are kept per Cloudflare
+location and are approximate. Without the binding, without an address, or if the limiter fails, registration is not
+limited. To change the numbers, edit `limit` and `period` (10 or 60 seconds) in `wrangler.jsonc` and deploy.
+
 ### Closing the workers.dev address
 
 CloudFront reaches the Worker on its workers.dev name, and so can anyone else, skipping whatever CloudFront enforces.
