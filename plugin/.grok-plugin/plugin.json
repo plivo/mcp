@@ -6,6 +6,7 @@
     "name": "Plivo",
     "url": "https://www.plivo.com"
   },
+  "license": "Apache-2.0",
   "homepage": "https://github.com/plivo/mcp",
   "repository": "https://github.com/plivo/mcp",
   "keywords": ["plivo", "plivo mcp", "plivo sms", "plivo voice", "plivo api"]

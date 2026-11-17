@@ -8,13 +8,15 @@ The plugin contains only an MCP server reference (`.mcp.json`). It ships no code
 ## Sign-in
 
 The first time Grok Build uses the server, it opens Plivo's sign-in page in your browser, where you sign in with your
-Plivo account and approve the connection. No API key or token is stored in this plugin.
+Plivo account and approve the connection. On that page you choose which of your organizations Grok Build can use and
+how much it can do: full access, read-only, or a level for each area such as messages, calls and phone numbers. No API
+key or token is stored in this plugin.
 
 ## Network endpoints and credentials
 
 - **Endpoint:** `https://mcp.plivo.com/mcp`, the hosted Plivo MCP server. The plugin calls nothing else.
-- **Credential:** the sign-in token Grok Build receives when you sign in with Plivo. Grok Build keeps it; you can
-  revoke it from the Plivo console.
+- **Credential:** the sign-in token Grok Build receives when you sign in with Plivo. Grok Build keeps it. It expires
+  after 30 days, and it works only through the Plivo MCP server.
 
 ## Data
 
@@ -26,6 +28,10 @@ or sending a message, placing a call or changing a number. Plivo keeps these rec
 
 Anything that costs money, cannot be undone, gives lasting access to the account or changes where calls and messages
 go asks for your approval before it is sent.
+
+## License
+
+Apache-2.0. See [LICENSE](../LICENSE).
 
 ## Support
 
