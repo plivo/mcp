@@ -2039,6 +2039,20 @@ function setupDiagnose(record: { status: number; body?: unknown }, chat: { statu
   return { sent, toWorker: (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env) };
 }
 
+describe("docs links in tool descriptions", () => {
+  // Claude's directory flags a tool that calls an API without pointing at that API's docs.
+  it("ends each shortcut with its operation's docs page and names the Plivo API docs on the two general tools", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const general = ["plivo_api_read", "plivo_api_write"];
+    const missing = tools
+      .filter((t) => general.includes(t.name) || t.description?.includes("For other options"))
+      .filter((t) => !/https:\/\/(www\.)?plivo\.com\/docs/.test(t.description ?? ""))
+      .map((t) => t.name);
+    expect(missing).toEqual([]);
+    expect(tools.find((t) => t.name === "send_sms")?.description).toContain("Docs: https://plivo.com/docs/messaging/api/messages");
+  });
+});
+
 describe("diagnose", () => {
   it("gives every tool its title in the annotations too, where Claude's directory reads it", async () => {
     const { tools } = await (await connect(setup().toWorker)).listTools();

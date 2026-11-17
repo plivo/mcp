@@ -182,7 +182,7 @@ export function buildShortcuts(defs: ShortcutDef[]): Shortcut[] {
       name: def.name,
       op,
       kind,
-      description: [def.description, notes, def.params.length ? other : ""].filter(Boolean).join(" "),
+      description: [def.description, notes, def.params.length ? other : "", `Docs: ${op.docs_url}`].filter(Boolean).join(" "),
       // Strict, so a misspelt or unlisted param is reported to the model instead of silently dropped.
       inputSchema: oneOf.length
         ? z.strictObject(shape).refine((a) => oneOf.some((k) => a[k] !== undefined && a[k] !== ""), {
