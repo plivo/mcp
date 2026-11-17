@@ -23,7 +23,7 @@ export function createTokenCheck(fetchImpl?: typeof fetch) {
       const res = await callUpstream(req, cred, fetchImpl, PROBE_TIMEOUT_MS);
       if (res.tokenRejected) return false;
       // A token without the account module was still accepted as a token.
-      if (res.ok || res.scopeMissing) {
+      if (res.ok || res.scopeMissing || res.notGranted !== undefined) {
         acceptedUntil.delete(key);
         if (acceptedUntil.size >= MAX_CACHED) acceptedUntil.delete(acceptedUntil.keys().next().value!);
         acceptedUntil.set(key, Date.now() + VALID_FOR_MS);

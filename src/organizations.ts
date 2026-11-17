@@ -1,4 +1,5 @@
 import { cleanName } from "./oauth";
+import { parsePermissions, type Permissions } from "./permissions";
 import { AUTH_ID_RE, callUpstream, type BuiltRequest, type Credential, type UpstreamResult } from "./upstream";
 
 export interface Organization {
@@ -47,7 +48,7 @@ export async function listOrganizations(
   apiBase: string,
   fetchImpl?: typeof fetch,
   timeoutMs?: number,
-): Promise<{ organizations: Organization[] } | OrgFailure> {
+): Promise<{ organizations: Organization[]; permissions?: Permissions } | OrgFailure> {
   let res: UpstreamResult;
   try {
     res = await callUpstream({ url: route(apiBase, "organizations"), method: "GET", warnings: [] }, cred, fetchImpl, timeoutMs);
@@ -55,9 +56,11 @@ export async function listOrganizations(
     return { error: "Plivo could not be reached to list the organizations." };
   }
   if (!res.ok) return failure(res, "Plivo could not list the organizations");
-  const raw = record(record(res.body).data).organizations;
+  const data = record(record(res.body).data);
+  const raw = data.organizations;
   if (!Array.isArray(raw)) return { error: "Plivo's list of organizations could not be read." };
-  return { organizations: raw.flatMap((v) => organization(v, record(v).current === true) ?? []) };
+  const permissions = parsePermissions(data.permissions);
+  return { organizations: raw.flatMap((v) => organization(v, record(v).current === true) ?? []), ...(permissions ? { permissions } : {}) };
 }
 
 const UNCONFIRMED = "The switch could not be confirmed. Call list_organizations to see which organization this connection is on.";

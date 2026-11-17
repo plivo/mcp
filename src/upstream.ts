@@ -1,4 +1,5 @@
 import { findParam, type Operation } from "./catalog";
+import { notGrantedModule } from "./permissions";
 
 export interface Credential {
   /** The caller's Authorization header, forwarded unchanged. */
@@ -117,6 +118,8 @@ export interface UpstreamResult {
   tokenRejected?: boolean;
   /** The auth proxy refused the call because the token was minted without the module it needs. */
   scopeMissing?: boolean;
+  /** The module this call needs and the user chose not to grant at sign-in; a new sign-in is theirs to start. */
+  notGranted?: string;
 }
 
 export const SECRET_KEY = new RegExp(
@@ -247,8 +250,17 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   // send the client into a sign-in loop.
   const tokenRejected = res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "");
   // The proxy names the missing module under errors.required_module; Plivo's own 403s use `error` and never carry it.
-  const scopeMissing = res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
-  return { status: res.status, ok: res.ok, body: hideSecrets(body), ...(tokenRejected ? { tokenRejected } : {}), ...(scopeMissing ? { scopeMissing } : {}) };
+  const notGranted = notGrantedModule(res.status, body);
+  const scopeMissing =
+    notGranted === undefined && res.status === 403 && typeof (body as { errors?: { required_module?: unknown } } | null)?.errors?.required_module === "string";
+  return {
+    status: res.status,
+    ok: res.ok,
+    body: hideSecrets(body),
+    ...(tokenRejected ? { tokenRejected } : {}),
+    ...(scopeMissing ? { scopeMissing } : {}),
+    ...(notGranted !== undefined ? { notGranted } : {}),
+  };
 }
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */

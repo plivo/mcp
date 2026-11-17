@@ -1,4 +1,5 @@
 import * as z from "zod/v4";
+import { notGranted, notGrantedModule } from "./permissions";
 import { getOperation } from "./catalog";
 import { buildRequest, callUpstream, readCapped, type Credential } from "./upstream";
 
@@ -72,6 +73,7 @@ export async function diagnose(kind: DiagnoseKind, uuid: string, caller: Credent
       config.onTokenRejected?.();
       return { value: { status: res.status, response: res.body }, isError: true };
     }
+    if (res.notGranted !== undefined) return { value: notGranted(res.notGranted), isError: true };
     if (res.status === 404) return { value: `No ${kind} ${uuid} on this account. Find the id with ${subject.listTool}.`, isError: true };
     if (res.ok) record = res.body;
   } catch {
@@ -106,7 +108,8 @@ export async function diagnose(kind: DiagnoseKind, uuid: string, caller: Credent
     const body = await readCapped(res.body, 4_000).catch(() => "");
     if (res.status === 401 && /\binvalid_token\b/.test(res.headers.get("WWW-Authenticate") ?? "")) config.onTokenRejected?.();
     if (res.status === 429) return { value: "Plivo's diagnose limit for this account is reached. Try again in a minute.", isError: true };
-    return { value: { status: res.status, response: parseJSON(body) }, isError: true };
+    const refused = notGrantedModule(res.status, parseJSON(body));
+    return { value: refused === undefined ? { status: res.status, response: parseJSON(body) } : notGranted(refused), isError: true };
   }
 
   const { text, failure } = await readStream(res.body);
