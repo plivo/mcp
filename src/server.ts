@@ -9,6 +9,7 @@ import { searchOperations } from "./search";
 import { shortcuts } from "./shortcuts";
 import { listOrganizations, NOT_ALLOWED, switchOrganization, switchRequest, type OrgFailure } from "./organizations";
 import { describePermissions, notGranted, permits } from "./permissions";
+import { MAX_AUDIO_BYTES, SPEAK_BILLED_NOTE, SPEAK_FORMAT, SPEAK_OP, speakArgs, speakDocs, toBase64 } from "./speech";
 import { AUTH_ID_RE, buildRequest, callUpstream, type CallArgs, type Credential, type UpstreamResult } from "./upstream";
 import { inputError } from "./validate";
 
@@ -74,6 +75,27 @@ function text(value: unknown, isError = false) {
   return { content: [{ type: "text" as const, text: s }], ...(isError ? { isError: true } : {}) };
 }
 
+/** What a speak call returns: a short account of it for the model, and the clip itself. */
+function audioResult(args: CallArgs, audio: { data: Uint8Array; mime: string }) {
+  const params = args.params ?? {};
+  const summary = {
+    status: 200,
+    response: {
+      voice_id: params.voice_id,
+      characters: [...String(params.text)].length,
+      format: `mp3, ${SPEAK_FORMAT.sample_rate / 1000} kHz, ${SPEAK_FORMAT.bitrate / 1000} kbps`,
+      bytes: audio.data.byteLength,
+    },
+    note: "The audio is attached as an audio clip. It is billed per character.",
+  };
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify(summary, null, 2) },
+      { type: "audio" as const, data: toBase64(audio.data), mimeType: audio.mime },
+    ],
+  };
+}
+
 function describe(op: Operation) {
   return {
     id: op.id,
@@ -86,7 +108,7 @@ function describe(op: Operation) {
     destructive: op.destructive,
     needs_approval: approvalReasons(op),
     path_params: op.path_params ?? [],
-    params: op.params,
+    params: op.id === SPEAK_OP ? speakDocs(op.params) : op.params,
     fixed_query: op.fixed_query,
     docs_url: op.docs_url,
   };
@@ -198,9 +220,11 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     register(name, { ...config, annotations: { ...config.annotations, title: config.title } }, cb)) as typeof register;
   const caller = ctx.authInfo?.extra?.credential as Credential | undefined;
 
-  async function call(kind: "read" | "write", args: z.infer<typeof callInput>, reqCtx: ServerContext) {
-    const op = getOperation(args.id);
-    if (!op) return text(`Unknown operation "${args.id}". Use plivo_api_search to find a valid id.`, true);
+  async function call(kind: "read" | "write", given: z.infer<typeof callInput>, reqCtx: ServerContext) {
+    const op = getOperation(given.id);
+    if (!op) return text(`Unknown operation "${given.id}". Use plivo_api_search to find a valid id.`, true);
+    // What is sent and approved; `given` is what the model asked for, which is what gets checked.
+    const args = op.id === SPEAK_OP ? speakArgs(given) : given;
     if (kind === "read" && op.method !== "GET") return text(`${op.id} changes data; call it with plivo_api_write.`, true);
     if (kind === "write" && op.method === "GET") return text(`${op.id} is read-only; call it with plivo_api_read.`, true);
     const reasons = approvalReasons(op);
@@ -213,7 +237,7 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     // Built before asking, so the user is never asked to approve a request that cannot be sent.
     const req = buildRequest(op, args, caller, config.apiBase);
     if ("error" in req) return text(req.error, true);
-    const invalid = kind === "write" ? inputError(op, args) : undefined;
+    const invalid = kind === "write" ? inputError(op, given) : undefined;
     if (invalid) return text(`Nothing was done: ${invalid}.`, true);
     let send = req;
     if (needsConfirmation && config.confirmationMode === "confirm") {
@@ -234,20 +258,27 @@ export function buildServer(ctx: McpRequestContext, config: ServerConfig): McpSe
     }
     let res;
     try {
-      res = await callUpstream(send, caller, config.fetchImpl);
+      res = await callUpstream(send, caller, config.fetchImpl, undefined, op.id === SPEAK_OP ? MAX_AUDIO_BYTES : undefined);
     } catch (e) {
       const reason = e instanceof Error && e.name === "TimeoutError" ? "timed out" : "failed";
-      return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.`, true);
+      const billed = op.id === SPEAK_OP ? ` ${SPEAK_BILLED_NOTE}` : "";
+      return text(`The Plivo API call ${reason}. Nothing is known about whether it took effect; check before retrying.${billed}`, true);
     }
     if (res.tokenRejected) config.onTokenRejected?.();
     if (res.scopeMissing) config.onScopeMissing?.();
     if (res.notGranted !== undefined) return text(notGranted(res.notGranted), true);
     if (send !== req && otherAccount(res)) return text(MOVED, true);
+    if (res.audioTooLarge) {
+      return text(`Plivo sent more audio than this server can return (${MAX_AUDIO_BYTES / 1000} KB). The request was carried out and is billed; speak less text per request.`, true);
+    }
+    if (res.audio) return audioResult(args, res.audio);
     const result: Record<string, unknown> = { status: res.status, response: res.body };
     if (req.warnings.length) result.warnings = req.warnings;
     const notes = [
       op.id === "GET /Call/" && !Object.keys(args.params ?? {}).some((k) => k.startsWith("end_time")) && CALL_WINDOW_NOTE,
       UNTRUSTED_NOTE[op.id],
+      // A 200 with no audio is an error page in disguise, and a 5xx or timeout can come after Plivo billed it.
+      op.id === SPEAK_OP && (res.ok || res.status >= 500 || res.status === 408) && SPEAK_BILLED_NOTE,
     ].filter(Boolean);
     if (notes.length) result.note = notes.join(" ");
     return text(result, !res.ok);
