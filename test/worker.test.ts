@@ -2064,6 +2064,15 @@ describe("docs links in tool descriptions", () => {
   });
 });
 
+describe("OpenAI domain check", () => {
+  // The portal fetches this to prove the domain and accepts only the exact token, nothing around it.
+  it("answers with the configured token alone, and 404 when none is set", async () => {
+    const res = await setup({ OPENAI_APPS_CHALLENGE: " tok-123\n" }).toWorker("http://localhost/.well-known/openai-apps-challenge");
+    expect([res.status, res.headers.get("Content-Type"), await res.text()]).toEqual([200, "text/plain", "tok-123"]);
+    expect((await setup().toWorker("http://localhost/.well-known/openai-apps-challenge")).status).toBe(404);
+  });
+});
+
 describe("diagnose", () => {
   it("gives every tool its title in the annotations too, where Claude's directory reads it", async () => {
     const { tools } = await (await connect(setup().toWorker)).listTools();
