@@ -124,6 +124,7 @@ var moduleArea = map[string]string{
 	"Number": "number", "PhoneNumber": "number", "CnamLookup": "number",
 	"Application": "application", "Endpoint": "application",
 	"Zentrunk": "sip", "Verify": "verify", "Ucc": "ucc", "AgentFlow": "agent", "AgentFlowNode": "agent",
+	"TTS": "tts",
 }
 
 // module names follow the auth proxy's existing ones: message writes that send are message.send, every
