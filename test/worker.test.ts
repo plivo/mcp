@@ -2039,6 +2039,17 @@ function setupDiagnose(record: { status: number; body?: unknown }, chat: { statu
   return { sent, toWorker: (input: string | URL | Request, init?: RequestInit) => worker.fetch(withHost(new Request(input, init)), env) };
 }
 
+describe("tool annotations", () => {
+  // ChatGPT's directory refuses a tool without all three hints, and counts a send or purchase as destructive.
+  it("sets every hint explicitly and marks sends and purchases destructive", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const hints = ["readOnlyHint", "destructiveHint", "openWorldHint"] as const;
+    expect(tools.filter((t) => hints.some((h) => typeof t.annotations?.[h] !== "boolean")).map((t) => t.name)).toEqual([]);
+    const destructive = (name: string) => tools.find((t) => t.name === name)?.annotations?.destructiveHint;
+    expect(["send_sms", "make_call", "buy_number", "get_account"].map(destructive)).toEqual([true, true, true, false]);
+  });
+});
+
 describe("docs links in tool descriptions", () => {
   // Claude's directory flags a tool that calls an API without pointing at that API's docs.
   it("ends each shortcut with its operation's docs page and names the Plivo API docs on the two general tools", async () => {

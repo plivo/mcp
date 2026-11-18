@@ -346,7 +346,8 @@ async function authorize(request: Request, origin: URL, cfg: OAuthConfig): Promi
   }
 
   const state = q.get("state") ?? undefined;
-  const fail = (error: string, description: string) => redirectTo(redirectUri, { error, error_description: description, state });
+  const fail = (error: string, description: string) =>
+    redirectTo(redirectUri, { error, error_description: description, state, iss: origin.origin });
   if (q.get("response_type") !== "code") return fail("unsupported_response_type", "only response_type=code is supported");
   const challenge = q.get("code_challenge") ?? "";
   if (q.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(challenge)) {
@@ -405,7 +406,7 @@ async function callback(request: Request, origin: URL, cfg: OAuthConfig): Promis
   const loginCode = q.get("code");
   if (!loginCode) {
     const error = q.get("error") === "access_denied" ? "access_denied" : "server_error";
-    return redirectTo(login.redirect_uri, { error, state: login.state }, clear);
+    return redirectTo(login.redirect_uri, { error, state: login.state, iss: origin.origin }, clear);
   }
   const code: Code = {
     client_id: login.client_id,
