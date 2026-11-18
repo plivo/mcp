@@ -45,6 +45,8 @@ export interface Env {
   EDGE_SECRET?: string;
   /** Rate limit for /register, per caller address; the binding and its numbers are in wrangler.jsonc. */
   REGISTER_LIMITER?: RateLimit;
+  /** The token OpenAI's plugin portal shows to prove this domain. Public, not a secret; unset answers 404. */
+  OPENAI_APPS_CHALLENGE?: string;
 }
 
 const EDGE_SECRET_HEADER = "X-Plivo-Edge-Secret";
@@ -184,6 +186,10 @@ export function createWorker(plainFetch?: typeof fetch) {
           fetchImpl,
           registerLimiter: env.REGISTER_LIMITER,
         });
+      }
+      if (url.pathname === "/.well-known/openai-apps-challenge") {
+        const token = env.OPENAI_APPS_CHALLENGE?.trim();
+        return token ? new Response(token, { headers: { "Content-Type": "text/plain" } }) : new Response("Not found\n", { status: 404 });
       }
       if (url.pathname !== "/mcp") {
         if (url.pathname !== "/") return new Response("Not found\n", { status: 404 });

@@ -1,0 +1,320 @@
+{
+  "$schema": "https://developers.openai.com/plugins/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Plivo",
+    "subtitle": "SMS, voice and phone numbers",
+    "description": "Plivo connects ChatGPT to the user's own Plivo account. Send SMS, MMS and WhatsApp messages, place and manage voice calls, search for and buy phone numbers, look up call and message records, read Plivo's documentation, and find out why a call or message failed. Named tools cover the common tasks; for the rest of the Plivo API, plivo_api_search finds an operation, plivo_api_details shows its parameters and approval rules, and plivo_api_read or plivo_api_write calls it. The user signs in with their Plivo account and chooses which organizations the connection may use and how much it may do: full access, read-only, or a level per area. Anything that costs money, cannot be undone, gives lasting access to the account, changes where calls and messages go, or changes a live AI agent asks the user to approve it before it runs.",
+    "category": "DEVELOPER_TOOLS"
+  },
+  "tools": {
+    "buy_number": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Buys a phone number for the account.",
+        "open_world_justification": "Rents a public phone number from Plivo's inventory.",
+        "destructive_justification": "A purchase charges the account and cannot be undone, so the user must approve it first."
+      }
+    },
+    "diagnose_call": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Asks Plivo's support assistant why a call was answered, dropped or failed. Not read-only because the assistant may open a support ticket.",
+        "open_world_justification": "Uses the user's own call or message records and Plivo's support systems.",
+        "destructive_justification": "Reads records and may open a support ticket; deletes, overwrites, sends or buys nothing."
+      }
+    },
+    "diagnose_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Asks Plivo's support assistant why a message failed or what its status means. Not read-only because the assistant may open a support ticket.",
+        "open_world_justification": "Uses the user's own call or message records and Plivo's support systems.",
+        "destructive_justification": "Reads records and may open a support ticket; deletes, overwrites, sends or buys nothing."
+      }
+    },
+    "get_account": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the account's details and balance; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "get_call": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads one call record; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "get_message": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads one message; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "hangup_call": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Ends a live call or cancels a queued one.",
+        "open_world_justification": "Ends a call with an outside party.",
+        "destructive_justification": "Ending a call cannot be undone, so the user must approve it first."
+      }
+    },
+    "list_calls": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads completed calls; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "list_messages": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads sent and received messages; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "list_numbers": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the phone numbers on the account; changes nothing.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "list_organizations": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists the Plivo organizations this connection may use; changes nothing.",
+        "open_world_justification": "Reads the user's own Plivo organizations and access level.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "make_call": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Places an outbound phone call.",
+        "open_world_justification": "Rings an outside recipient's phone.",
+        "destructive_justification": "A placed call cannot be taken back and costs money, so the user must approve it before it is placed."
+      }
+    },
+    "plivo_api_details": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns the parameters and approval rules of one catalog operation; makes no API call and changes nothing.",
+        "open_world_justification": "Reads a fixed catalog bundled with the server; touches no account or outside system.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "plivo_api_read": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Calls only GET operations of the Plivo API, which read records and change nothing. The few lookups that cost money ask the user to approve first.",
+        "open_world_justification": "Reads records in the signed-in user's own Plivo account, which hold data from outside parties such as caller numbers and message text.",
+        "destructive_justification": "GET operations cannot delete, overwrite, send or buy anything."
+      }
+    },
+    "plivo_api_search": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches the server's built-in catalog of Plivo API operations; makes no API call and changes nothing.",
+        "open_world_justification": "Searches a fixed catalog bundled with the server; touches no account or outside system.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "plivo_api_write": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Calls POST, PATCH and DELETE operations of the Plivo API, which create, change or delete records in the user's account.",
+        "open_world_justification": "Can send messages and place calls to outside recipients, and change where the account's calls and messages are routed.",
+        "destructive_justification": "Can delete or overwrite account resources, and send or buy things that cannot be taken back. Operations that cost money, cannot be undone, give lasting access to the account, change where calls and messages go, or change a live AI agent show the user what they will do and run only after the user approves."
+      }
+    },
+    "search_docs": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches Plivo's public documentation bundled with the server; changes nothing.",
+        "open_world_justification": "Returns Plivo documentation only; touches no account or outside system.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "search_numbers": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads phone numbers available to buy; changes nothing.",
+        "open_world_justification": "Reads Plivo's public inventory of numbers for sale.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "send_sms": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends an SMS, MMS or WhatsApp message.",
+        "open_world_justification": "Delivers a message to an outside recipient's phone.",
+        "destructive_justification": "A sent message cannot be recalled and costs money, so the user must approve it before it is sent."
+      }
+    },
+    "switch_organization": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Changes which of the user's Plivo organizations later calls use.",
+        "open_world_justification": "Acts on the user's own Plivo organizations.",
+        "destructive_justification": "Switching back undoes it; nothing is deleted, overwritten, sent or bought. It asks the user to approve first."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Read the account balance and phone numbers.",
+      "user_prompt": "Show my Plivo account balance and list the phone numbers on my account.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_account, list_numbers",
+      "expected_output": "Shows the account's balance and type, then lists its phone numbers with their country and type.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Read recent call records.",
+      "user_prompt": "List my Plivo calls from the last 7 days and show the details of the most recent one.",
+      "file_attachment_urls": null,
+      "tools_triggered": "list_calls, get_call",
+      "expected_output": "Lists the calls of the last 7 days with direction, numbers, duration and status, then the full record of the most recent call.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Answer a how-to question from Plivo's documentation.",
+      "user_prompt": "How do I play an audio file to a caller with Plivo XML? Cite the Plivo docs.",
+      "file_attachment_urls": null,
+      "tools_triggered": "search_docs",
+      "expected_output": "Explains the Play XML element with a short example and links to the Plivo documentation page.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Reach an operation that has no named tool.",
+      "user_prompt": "List the Plivo applications on my account.",
+      "file_attachment_urls": null,
+      "tools_triggered": "plivo_api_search, plivo_api_details, plivo_api_read",
+      "expected_output": "Finds the List Applications operation, calls it, and lists each application's name and ID.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Buy a phone number, which needs the user's approval.",
+      "user_prompt": "Find an available US local phone number and buy it.",
+      "file_attachment_urls": null,
+      "tools_triggered": "search_numbers, buy_number",
+      "expected_output": "Shows available numbers. Before buying, Plivo asks the user to approve the purchase and says it costs money. If the user declines, nothing is bought; if the user approves, the number is bought and shown.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for an unrelated weather request.",
+      "user_prompt": "What will the weather be in Chicago tomorrow?",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Plivo is not used; weather is outside what it does.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for general programming help.",
+      "user_prompt": "Write a Python function that checks whether an email address is valid.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Plivo is not used; the request does not involve a Plivo account.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for another provider.",
+      "user_prompt": "Send a text message from my Twilio account to +14155550123.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Plivo is not used, because the user asked for their Twilio account.",
+      "expected_output_url": null
+    }
+  ]
+}
