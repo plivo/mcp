@@ -13,6 +13,7 @@ import { buildRequest, callUpstream, hideSecrets } from "../src/upstream";
 import catalogData from "../catalog/catalog.json";
 import { docsSources } from "../src/docs";
 import proxyRoutes from "../catalog/proxy-routes.json";
+import chatgptSubmission from "../chatgpt-app-submission.json";
 
 const STK = "Bearer stk_" + "a".repeat(32);
 const API = "http://127.0.0.1:8799/v1/proxy";
@@ -2061,6 +2062,17 @@ describe("docs links in tool descriptions", () => {
       .map((t) => t.name);
     expect(missing).toEqual([]);
     expect(tools.find((t) => t.name === "send_sms")?.description).toContain("Docs: https://plivo.com/docs/messaging/api/messages");
+  });
+});
+
+describe("ChatGPT submission file", () => {
+  // OpenAI imports these hints and reviews against them, so the file must describe the tools the server really lists.
+  it("lists exactly the server's tools, with the same hints", async () => {
+    const { tools } = await (await connect(setup().toWorker)).listTools();
+    const hints = (a: Record<string, unknown> = {}) => ({ readOnlyHint: a.readOnlyHint, openWorldHint: a.openWorldHint, destructiveHint: a.destructiveHint });
+    const served = Object.fromEntries(tools.map((t) => [t.name, hints(t.annotations)]));
+    const submitted = Object.fromEntries(Object.entries(chatgptSubmission.tools).map(([name, t]) => [name, hints(t.annotations)]));
+    expect(submitted).toEqual(served);
   });
 });
 
