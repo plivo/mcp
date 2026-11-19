@@ -1,4 +1,5 @@
 import type { Operation } from "./catalog";
+import { SPEAK_OP, speakError } from "./speech";
 import { HIDDEN, pairName, secretNamed, type CallArgs } from "./upstream";
 
 // One approval must not reach a crowd: Plivo takes up to 1,000 destinations in one `to`.
@@ -168,6 +169,11 @@ export function inputError(op: Operation, args: CallArgs): string | undefined {
 
   const marked = hiddenMarkerUnder(params);
   if (marked) return `${marked} holds "${HIDDEN}", which this server put in place of the real value in a reply; supply the real value, or leave the field out`;
+
+  if (op.id === SPEAK_OP) {
+    const refused = speakError(params);
+    if (refused) return refused;
+  }
 
   // Plivo would split the destinations on it, and the count below on "<" would be wrong.
   if (CAPPED[op.id] && params.delimiter != null) return 'delimiter is not accepted through this server; separate destinations with "<"';

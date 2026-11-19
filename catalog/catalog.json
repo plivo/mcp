@@ -2,9 +2,9 @@
   "schema": 1,
   "sources": {
     "docs_url": "https://docs.plivo.com/docs/llms-full.txt",
-    "docs_sha256": "ee1c0696c197f4b92b9f5fc8e269d1b9d91869223fa95838dfe69656fad9a98d",
+    "docs_sha256": "652a46a256f5ad0ef5a80f1d50b9338a58a8eb4eea6291a0221f70ed5bf7db74",
     "cli_repo": "github.com/plivo/plivo-cli",
-    "cli_commit": "27c7a03198cacf17dd88e305bde4e408258fbf77"
+    "cli_commit": "bfec02070d1884a0bb628b70b43c8317ef977360"
   },
   "operations": [
     {
@@ -622,6 +622,28 @@
       ],
       "params": [],
       "module": "call.make",
+      "costs_money": false,
+      "destructive": true
+    },
+    {
+      "id": "DELETE /TTS/Lexicons/{lexicon_id}/",
+      "method": "DELETE",
+      "path": "/v1/Account/{auth_id}/TTS/Lexicons/{lexicon_id}/",
+      "title": "Delete a Lexicon",
+      "section": "Delete a Lexicon",
+      "description": "Permanently delete a lexicon.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/lexicons",
+      "path_params": [
+        {
+          "name": "lexicon_id",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [],
+      "module": "tts.write",
       "costs_money": false,
       "destructive": true
     },
@@ -2321,6 +2343,92 @@
       ],
       "params": [],
       "module": "call.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /TTS/Lexicons/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/TTS/Lexicons/",
+      "title": "List All Lexicons",
+      "section": "List All Lexicons",
+      "description": "List every lexicon in your organization.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/lexicons",
+      "params": [],
+      "module": "tts.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /TTS/Lexicons/{lexicon_id}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/TTS/Lexicons/{lexicon_id}/",
+      "title": "Retrieve a Lexicon",
+      "section": "Retrieve a Lexicon",
+      "description": "Get one lexicon by its ID.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/lexicons",
+      "path_params": [
+        {
+          "name": "lexicon_id",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [],
+      "module": "tts.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /TTS/Usage/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/TTS/Usage/",
+      "title": "Retrieve Usage",
+      "section": "Retrieve Usage",
+      "description": "Get usage totals for your account.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/usage",
+      "params": [],
+      "module": "tts.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /TTS/Voices/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/TTS/Voices/",
+      "title": "List All Voices",
+      "section": "List All Voices",
+      "description": "List the voices your account can use.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/voices",
+      "params": [],
+      "module": "tts.read",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "GET /TTS/Voices/{voice_id}/",
+      "method": "GET",
+      "path": "/v1/Account/{auth_id}/TTS/Voices/{voice_id}/",
+      "title": "Retrieve a Voice",
+      "section": "Retrieve a Voice",
+      "description": "Get one voice by its `voice_id`.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/voices",
+      "path_params": [
+        {
+          "name": "voice_id",
+          "in": "path",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "params": [],
+      "module": "tts.read",
       "costs_money": false,
       "destructive": false
     },
@@ -5709,6 +5817,122 @@
         }
       ],
       "module": "message.write",
+      "costs_money": false,
+      "destructive": false
+    },
+    {
+      "id": "POST /TTS/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/TTS/",
+      "title": "Synthesize Speech",
+      "section": "Synthesize Speech",
+      "description": "Convert text to speech. Through this server the audio comes back as an attached mp3 clip, text is limited to 1,000 characters and output_format is not accepted.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/batch",
+      "params": [
+        {
+          "name": "voice_id",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "A voice from List voices."
+        },
+        {
+          "name": "text",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "Text to speak. Up to 5,000 characters."
+        },
+        {
+          "name": "language",
+          "in": "body",
+          "type": "string",
+          "default": "auto",
+          "description": "`auto`, `en-US`, `en-GB`, `en-IN`, `en-AU`, `hi`, `bn`, `ta`, `te`, `mr`, `gu` or `kn`. The voice must speak it, or the request returns `400 language_not_supported`. There is no plain `en`."
+        },
+        {
+          "name": "output_format",
+          "in": "body",
+          "type": "object",
+          "description": "Audio format. Default: raw `pcm_s16le` at 24000 Hz. See Output format."
+        },
+        {
+          "name": "pace",
+          "in": "body",
+          "type": "number",
+          "default": "1.0",
+          "description": "Speaking speed, `0.7` to `1.2`."
+        },
+        {
+          "name": "volume",
+          "in": "body",
+          "type": "number",
+          "default": "1.0",
+          "description": "Loudness, `0.5` to `2.0`."
+        },
+        {
+          "name": "pronunciations",
+          "in": "body",
+          "type": "array",
+          "description": "Up to 100 inline rules: `{\"word\", \"value\", \"kind\"}`. `kind` is `ipa`, `arpa` or `respell`. See Pronunciation."
+        },
+        {
+          "name": "lexicon_id",
+          "in": "body",
+          "type": "string",
+          "description": "A saved lexicon to apply."
+        },
+        {
+          "name": "continuation",
+          "in": "body",
+          "type": "boolean",
+          "description": "Send `false`, with `seed`, for repeatable audio."
+        },
+        {
+          "name": "seed",
+          "in": "body",
+          "type": "integer",
+          "description": "With `continuation: false`, the same input and seed give identical audio."
+        }
+      ],
+      "module": "tts.write",
+      "costs_money": true,
+      "destructive": false
+    },
+    {
+      "id": "POST /TTS/Lexicons/",
+      "method": "POST",
+      "path": "/v1/Account/{auth_id}/TTS/Lexicons/",
+      "title": "Create a Lexicon",
+      "section": "Create a Lexicon",
+      "description": "Create a lexicon. An organization can have up to 100.",
+      "group": "models",
+      "docs_url": "https://plivo.com/docs/models/text-to-speech/api/lexicons",
+      "params": [
+        {
+          "name": "name",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "Your name for the lexicon. Up to 100 characters."
+        },
+        {
+          "name": "kind",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "How the values are written. Values: `ipa`, `arpa`, `respell`."
+        },
+        {
+          "name": "rules",
+          "in": "body",
+          "type": "array",
+          "required": true,
+          "description": "Up to 100 `{\"word\", \"value\"}` pairs."
+        }
+      ],
+      "module": "tts.write",
       "costs_money": false,
       "destructive": false
     },

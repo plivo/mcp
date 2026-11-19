@@ -151,6 +151,10 @@ export interface UpstreamResult {
   scopeMissing?: boolean;
   /** The module this call needs and the user chose not to grant at sign-in; a new sign-in is theirs to start. */
   notGranted?: string;
+  /** The audio a call returned, when the caller asked for audio and Plivo sent it. */
+  audio?: { data: Uint8Array; mime: string };
+  /** Plivo sent more audio than the caller allowed, so none is returned although the request was carried out. */
+  audioTooLarge?: boolean;
 }
 
 export const SECRET_KEY = new RegExp(
@@ -250,10 +254,19 @@ function clippedSecrets(text: string): boolean {
 const TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 1_000_000;
 
-export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImpl: typeof fetch = fetch, timeoutMs = TIMEOUT_MS): Promise<UpstreamResult> {
+const AUDIO_MIME = /^audio\/[\w.+-]+$/u;
+
+/** `audioMax` is the most audio bytes to return, for a call that answers with audio; the rest of the call is unchanged. */
+export async function callUpstream(
+  req: BuiltRequest,
+  cred: Credential,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = TIMEOUT_MS,
+  audioMax?: number,
+): Promise<UpstreamResult> {
   const headers: Record<string, string> = {
     Authorization: cred.authorization,
-    Accept: "application/json",
+    Accept: audioMax === undefined ? "application/json" : "audio/mpeg, application/json",
     "User-Agent": "plivo-mcp/0.1",
     ...clientHeaders(cred),
   };
@@ -269,6 +282,12 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
   if (res.status >= 300 && res.status < 400) {
     await res.body?.cancel();
     return { status: res.status, ok: false, body: { error: "upstream redirected; not followed" } };
+  }
+  const mime = (res.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (audioMax !== undefined && res.ok && AUDIO_MIME.test(mime)) {
+    // One byte past the limit tells "exactly at it" from "more than it".
+    const { bytes, clipped } = await readCappedBytes(res.body, audioMax + 1);
+    return clipped ? { status: res.status, ok: true, body: null, audioTooLarge: true } : { status: res.status, ok: true, body: null, audio: { data: bytes, mime } };
   }
   const text = await readCapped(res.body, MAX_BODY_BYTES);
   let body: unknown = text;
@@ -297,7 +316,12 @@ export async function callUpstream(req: BuiltRequest, cred: Credential, fetchImp
 
 /** Reads at most max bytes of a body, so an oversized one cannot exhaust the Worker's memory. */
 export async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number): Promise<string> {
-  if (!stream) return "";
+  return new TextDecoder().decode((await readCappedBytes(stream, max)).bytes);
+}
+
+/** The bytes of a body up to max, and whether the body reached max (so it may hold more). */
+export async function readCappedBytes(stream: ReadableStream<Uint8Array> | null, max: number): Promise<{ bytes: Uint8Array; clipped: boolean }> {
+  if (!stream) return { bytes: new Uint8Array(), clipped: false };
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -317,5 +341,5 @@ export async function readCapped(stream: ReadableStream<Uint8Array> | null, max:
     at += take;
     if (at >= all.byteLength) break;
   }
-  return new TextDecoder().decode(all);
+  return { bytes: all, clipped: size >= max };
 }

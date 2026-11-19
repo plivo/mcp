@@ -39,7 +39,7 @@ interface Sent {
   body: unknown;
 }
 
-type Reply = { status: number; body: unknown; headers?: Record<string, string> };
+type Reply = { status: number; body: unknown; headers?: Record<string, string>; audio?: Uint8Array };
 
 function setup(envOverrides: Partial<Env> = {}, reply: Reply | ((url: string, req: Sent) => Reply) = { status: 200, body: { api_id: "x", ok: true, auth_id: ORG_A } }) {
   const sent: Sent[] = [];
@@ -50,7 +50,7 @@ function setup(envOverrides: Partial<Env> = {}, reply: Reply | ((url: string, re
     sentHeaders.push(headers);
     sent.push({ url: String(url), method: init?.method ?? "GET", auth: headers.get("Authorization"), body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const r = typeof reply === "function" ? reply(String(url), sent.at(-1)!) : reply;
-    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json", ...r.headers } });
+    return new Response(r.audio ?? JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": r.audio ? "audio/mpeg" : "application/json", ...r.headers } });
   });
   const worker = createWorker(upstream as typeof fetch);
   const env: Env = { PLIVO_API_BASE: API, CONFIRM_SECRET: TEST_SECRET, ...envOverrides };
@@ -610,7 +610,7 @@ describe("shortcuts", () => {
     expect(() => buildShortcuts([{ name: "x", id: "POST /Message/", description: "", params: ["dlt_entity_id"] }])).toThrow(/deprecated/);
     expect(() => buildShortcuts([{ name: "x", id: "POST /Message/", description: "", params: ["dst"], oneOf: ["src"] }])).toThrow(/not one of its params/);
     expect(() => buildShortcuts([{ name: "x", id: "GET /Number/", description: "", params: ["type"], bounds: { limit: { max: 20 } } }])).toThrow(/not one of its params/);
-    expect(() => buildShortcuts([{ name: "x", id: "GET /Number/", description: "", params: ["type"], bounds: { type: { max: 20 } } }])).toThrow(/not an integer/);
+    expect(() => buildShortcuts([{ name: "x", id: "GET /Number/", description: "", params: ["type"], bounds: { type: { max: 20 } } }])).toThrow(/not a number/);
   });
 
   it("keeps every shortcut param description short, since every tools/list carries it", async () => {
@@ -2183,5 +2183,101 @@ describe("diagnose", () => {
     const res = await call(await connect(toWorker, "Basic " + btoa("MAXXXXXXXXXXXXXXXXXX:secret")), "diagnose_call", { call_uuid: "c-1" });
     expect(res).toMatchObject({ isError: true });
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("text to speech", () => {
+  const SPEAK = { voice_id: "v1", text: "Hello from Plivo" };
+  const MP3_FORMAT = { container: "mp3", encoding: "mp3", sample_rate: 24000, bitrate: 48000 };
+  // Bytes above 0x7f, so a reply decoded as text would not survive.
+  const CLIP = Uint8Array.from([0x49, 0x44, 0x33, 0x03, 0xff, 0xfb, 0x90, 0x00, 0x80, 0xc3, 0xa9]);
+  const isSpeak = (url: string, req: Sent) => req.method === "POST" && url.endsWith("/TTS/");
+  const speaking = (reply: Reply) => (url: string, req: Sent): Reply => (isSpeak(url, req) ? reply : { status: 200, body: { auth_id: ORG_A, name: "Org A", cash_credits: "10.00" } });
+  type Part = { type: string; text?: string; data?: string; mimeType?: string };
+  const speak = async (client: Client, args: Record<string, unknown>, tool = "text_to_speech") =>
+    (await client.callTool({ name: tool, arguments: args })) as { isError?: boolean; content: Part[] };
+
+  it("asks first, then returns a summary and the clip byte for byte, in the one format it pins", async () => {
+    const { toWorker, sent, sentHeaders } = setup({}, speaking({ status: 200, body: null, audio: CLIP }));
+    const client = await connect(toWorker);
+    const first = await call(client, "text_to_speech", SPEAK);
+    const preview = first.parsed as { status: string; action: string; confirmation_code: string };
+    expect(preview).toMatchObject({ status: "confirmation_required", nothing_done_yet: true });
+    expect(preview.action).toContain("Hello from Plivo");
+    expect(writes(sent)).toHaveLength(0);
+
+    const done = await speak(client, { ...SPEAK, confirmation_code: preview.confirmation_code });
+    expect(done.isError).toBeUndefined();
+    expect(JSON.parse(done.content[0].text!)).toMatchObject({ status: 200, response: { voice_id: "v1", characters: 16, bytes: CLIP.length } });
+    expect(done.content[1]).toMatchObject({ type: "audio", mimeType: "audio/mpeg" });
+    expect(Uint8Array.from(atob(done.content[1].data!), (c) => c.charCodeAt(0))).toEqual(CLIP);
+    expect(writes(sent)).toEqual([{ url: `${API}/v1/Account/${ORG_A}/TTS/`, method: "POST", auth: STK, body: { ...SPEAK, output_format: MP3_FORMAT } }]);
+    expect(sentHeaders.at(-1)!.get("Accept")).toBe("audio/mpeg, application/json");
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ["text over the limit", { ...SPEAK, text: "a".repeat(1001) }, "may speak at most"],
+    ["blank text", { ...SPEAK, text: "  " }, "text must be"],
+    ["no voice", { text: "hi" }, "voice_id must be"],
+    ["an output format", { ...SPEAK, output_format: { container: "wav" } }, "always returns mp3"],
+    ["a language that does not exist", { ...SPEAK, language: "en" }, "language must be one of"],
+    ["a pace out of range", { ...SPEAK, pace: 2 }, "pace must be"],
+    ["a volume out of range", { ...SPEAK, volume: 0.1 }, "volume must be"],
+  ])("refuses %s before any question or request", async (_, params, why) => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), "plivo_api_write", { id: "POST /TTS/", params });
+    expect(res).toMatchObject({ isError: true });
+    expect(res.raw).toContain(why);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("counts characters, not UTF-16 units, against the limit", () => {
+    const op = getOperation("POST /TTS/")!;
+    expect(inputError(op, { params: { ...SPEAK, text: "😀".repeat(1000) } })).toBeUndefined();
+    expect(inputError(op, { params: { ...SPEAK, text: "😀".repeat(1001) } })).toContain("may speak at most");
+  });
+
+  it("holds the shortcut's own pace and volume ranges", async () => {
+    const { toWorker, sent } = setup();
+    const res = await speak(await connect(toWorker), { ...SPEAK, pace: 2 });
+    expect(res.isError).toBe(true);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("says a clip too long for one reply was carried out and billed, and returns none of it", async () => {
+    const { toWorker } = setup({}, speaking({ status: 200, body: null, audio: new Uint8Array(750_001) }));
+    const client = await connect(toWorker);
+    const code = ((await call(client, "text_to_speech", SPEAK)).parsed as { confirmation_code: string }).confirmation_code;
+    const res = await speak(client, { ...SPEAK, confirmation_code: code });
+    expect(res.isError).toBe(true);
+    expect(res.content).toHaveLength(1);
+    expect(res.content[0].text).toContain("carried out and is billed");
+  });
+
+  it.each<[string, Reply]>([
+    ["a 200 that holds no audio", { status: 200, body: { api_id: "x" } }],
+    ["a 502", { status: 502, body: { error: "bad gateway" } }],
+  ])("warns that %s may still have been billed", async (_, reply) => {
+    const { toWorker } = setup({}, speaking(reply));
+    const client = await connect(toWorker);
+    const code = ((await call(client, "text_to_speech", SPEAK)).parsed as { confirmation_code: string }).confirmation_code;
+    expect((await call(client, "text_to_speech", { ...SPEAK, confirmation_code: code })).raw).toContain("GET /TTS/Usage/");
+  });
+
+  it("reads voices through the proxy without asking", async () => {
+    const { toWorker, sent } = setup();
+    const res = await call(await connect(toWorker), "list_voices", {});
+    expect(res.isError).toBe(false);
+    expect(sent).toEqual([{ url: `${API}/v1/Account/me/TTS/Voices/`, method: "GET", auth: STK, body: undefined }]);
+  });
+
+  it("names the Text-to-speech setting when its permission was left off", () => {
+    expect(notGranted("tts.write")).toContain("Text-to-speech set to Read and write");
+    expect(notGranted("tts.read")).toContain("Text-to-speech set to Read-only or Read and write");
+  });
+
+  it("puts speaking and lexicon deletes behind the tts.write permission, and speaking behind an approval", () => {
+    expect(getOperation("DELETE /TTS/Lexicons/{lexicon_id}/")).toMatchObject({ module: "tts.write", destructive: true });
+    expect(getOperation("POST /TTS/")).toMatchObject({ module: "tts.write", costs_money: true });
   });
 });

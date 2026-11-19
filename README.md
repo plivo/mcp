@@ -26,7 +26,7 @@ line there. Any path other than `/`, `/mcp` and the sign-in routes answers 404.
 
 ## Tools
 
-The server registers 20 tools (`src/server.ts`): the 9 below and 11 shortcuts.
+The server registers 22 tools (`src/server.ts`): the 9 below and 13 shortcuts.
 
 | Tool | What it does |
 |---|---|
@@ -41,11 +41,23 @@ The server registers 20 tools (`src/server.ts`): the 9 below and 11 shortcuts.
 | `switch_organization` | Move the connection to another of those organizations, after the user approves |
 
 Shortcuts cover the common tasks in one call: `get_account`, `list_numbers`, `search_numbers`, `list_messages`,
-`get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`. Each one maps to a
+`get_message`, `list_calls`, `get_call`, `send_sms`, `make_call`, `buy_number`, `hangup_call`, `list_voices`,
+`text_to_speech`. Each one maps to a
 catalog operation and takes a short list of its params (`src/shortcuts.ts`); types and descriptions come from the
 catalog, and the Worker refuses to start if a listed operation or param is missing from it. The four `plivo_api_*`
-tools reach all 140 operations in the catalog (63 `GET`, 48 `POST`, 28 `DELETE`, 1 `PATCH`); 18 cost money and 22
+tools reach all 148 operations in the catalog (68 `GET`, 50 `POST`, 29 `DELETE`, 1 `PATCH`); 19 cost money and 23
 cannot be undone.
+
+### Text-to-speech
+
+`text_to_speech` (`POST /TTS/`) is the one operation that answers with audio, so it has its own path through the
+Worker (`src/speech.ts`). The reply is a short text summary followed by the clip as an MCP audio part. To keep the
+clip inside one reply, a request speaks at most 1,000 characters, `output_format` is not accepted, and the audio is
+always mp3 at 24 kHz and 48 kbps, at most 750 KB. All of that is checked before the user is asked to approve, since
+Plivo bills per character. Longer text and other formats stay with the Plivo CLI (`plivo tts speak`). Voices,
+lexicons and usage are plain JSON operations: `list_voices`, or `plivo_api_search` for the rest. A speak call that
+times out or fails with a 5xx may already have been billed, and the reply says to check `GET /TTS/Usage/` before
+retrying. The `/TTS/Realtime/` WebSocket is not exposed.
 
 The diagnose tools first check that the call or message is on the account, then send only its id (and a message's
 channel) to the auth proxy, which asks Plivo's support assistant and streams the answer back (30 seconds to 2 minutes
@@ -150,8 +162,8 @@ plain tool error; changing the list takes a new sign-in.
 ## Permissions
 
 On the sign-in screen the user can set Access to Read-only or Custom instead of Full access. Custom gives each of
-8 areas (Account, Phone numbers, Messages, ...) a level: No access, Read-only, or Read and write. The auth proxy stores
-the result as a subset of its 17 permissions (its modules, such as `message.send`) for the whole connection. The
+9 areas (Account, Phone numbers, Messages, ..., Text-to-speech) a level: No access, Read-only, or Read and write. The auth proxy stores
+the result as a subset of its 19 permissions (its modules, such as `message.send`) for the whole connection. The
 proxy enforces the choice; the Worker only reports it and keeps nothing about it.
 
 - A call the proxy refuses with `errors.error: "permission_not_granted"` is a plain tool error. It tells the model

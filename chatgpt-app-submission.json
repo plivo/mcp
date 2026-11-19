@@ -92,6 +92,30 @@
         "destructive_justification": "Ending a call cannot be undone, so the user must approve it first."
       }
     },
+    "list_voices": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the text-to-speech voices the account can use; changes nothing.",
+        "open_world_justification": "Reads Plivo's voice catalogue and the account's own voices.",
+        "destructive_justification": "Does not delete, overwrite, send or buy anything."
+      }
+    },
+    "text_to_speech": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Generates a speech clip with a Plivo voice, which Plivo bills for.",
+        "open_world_justification": "Sends the user's text to Plivo's speech service and returns the audio.",
+        "destructive_justification": "Plivo bills per character and the charge cannot be taken back, so the user must approve it before it is generated."
+      }
+    },
     "list_calls": {
       "annotations": {
         "readOnlyHint": true,

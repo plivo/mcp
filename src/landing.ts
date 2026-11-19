@@ -308,7 +308,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
   <div class="facts">
     <dl>
       <div><dt>Operations</dt><dd class="v"><span data-to="130">130</span><b>+</b></dd><dd class="d">Plivo API operations your app can reach.</dd></div>
-      <div><dt>Tools</dt><dd class="v"><span data-to="20">20</span></dd><dd class="d">Tools your app gets, shortcuts included.</dd></div>
+      <div><dt>Tools</dt><dd class="v"><span data-to="22">22</span></dd><dd class="d">Tools your app gets, shortcuts included.</dd></div>
       <div><dt>Sign-in lasts</dt><dd class="v"><span data-to="30">30</span><small>days</small></dd><dd class="d">One OAuth sign-in in your browser.</dd></div>
       <div><dt>API keys to paste</dt><dd class="v">0</dd><dd class="d">Nothing to copy, store or rotate.</dd></div>
     </dl>
@@ -416,6 +416,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
           <tr><td>Phone numbers</td><td class="ex">"Find a local number in San Francisco and buy it."</td></tr>
           <tr><td>SIP trunking</td><td class="ex">"Create a SIP trunk for my office PBX."</td></tr>
           <tr><td>AI agents</td><td class="ex">"Show my AI agents and pause the support agent."</td></tr>
+          <tr><td>Text-to-speech</td><td class="ex">"Read this announcement aloud in a Hindi voice."</td></tr>
           <tr><td>Verify</td><td class="ex">"Send a verification code to +1 415 555 0134."</td></tr>
           <tr><td>Account</td><td class="ex">"What is my account balance?"</td></tr>
           <tr><td>Docs search</td><td class="ex">"How do I record a call with Plivo XML?"</td></tr>
@@ -424,7 +425,7 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
       <p>It also covers Audio Streaming, number masking, 10DLC and toll-free verification.</p>
 
       <h2 id="tools">Tools</h2>
-      <p>Your app gets 20 tools: four universal tools that reach every operation, <code>search_docs</code>, 11 shortcuts that do the common tasks in one step, two diagnose tools and two organization tools.</p>
+      <p>Your app gets 22 tools: four universal tools that reach every operation, <code>search_docs</code>, 13 shortcuts that do the common tasks in one step, two diagnose tools and two organization tools.</p>
 
       <h3 id="universal-tools">Universal tools</h3>
       <div class="tw"><table class="stack">
@@ -453,6 +454,8 @@ th{font:400 11px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospa
           <tr><td><code>get_call</code></td><td>Shows the record of one call.</td></tr>
           <tr><td><code>make_call</code></td><td>Starts an outbound call. Asks first.</td></tr>
           <tr><td><code>hangup_call</code></td><td>Hangs up a live call. Asks first.</td></tr>
+          <tr><td><code>list_voices</code></td><td>Lists the text-to-speech voices you can use.</td></tr>
+          <tr><td><code>text_to_speech</code></td><td>Turns up to 1,000 characters into an mp3 clip. Asks first.</td></tr>
         </tbody>
       </table></div>
 

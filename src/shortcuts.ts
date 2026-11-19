@@ -1,6 +1,7 @@
 import * as z from "zod/v4";
 import { findParam, getOperation, type Operation, type Param } from "./catalog";
 import { confirmationCodeField } from "./confirm";
+import { SPEAK_LANGUAGES, SPEAK_MAX_CHARS } from "./speech";
 import type { CallArgs } from "./upstream";
 
 export interface ShortcutDef {
@@ -99,6 +100,25 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     },
   },
   { name: "hangup_call", id: "DELETE /Call/{call_uuid}/", description: "Hang up a live call or cancel a queued one.", params: [] },
+  {
+    name: "list_voices",
+    id: "GET /TTS/Voices/",
+    description:
+      "List the text-to-speech voices your account can use: voice_id, name, gender, languages and accent. " +
+      "Plivo's list has no filters, so choose a voice_id from it for text_to_speech.",
+    params: [],
+  },
+  {
+    name: "text_to_speech",
+    id: "POST /TTS/",
+    description: `Turn text into speech with a Plivo voice and get the audio back as an mp3 clip. Up to ${SPEAK_MAX_CHARS} characters a request; billed per character.`,
+    params: ["voice_id", "text", "language", "pace", "volume", "lexicon_id"],
+    describe: {
+      text: `Text to speak, up to ${SPEAK_MAX_CHARS} characters.`,
+      language: `Language code: ${SPEAK_LANGUAGES.join(", ")}. The voice must speak it, and there is no plain en. Defaults to auto.`,
+    },
+    bounds: { pace: { min: 0.7, max: 1.2 }, volume: { min: 0.5, max: 2.0 } },
+  },
 ];
 
 export interface Shortcut {
@@ -124,8 +144,9 @@ function field(p: Param, description = p.description, optional = !p.required, ra
     case "string":
       f = optional ? z.string() : z.string().min(1);
       break;
-    case "integer": {
-      let n = z.number().int();
+    case "integer":
+    case "number": {
+      let n = p.type === "integer" ? z.number().int() : z.number();
       if (range?.min !== undefined) n = n.min(range.min);
       if (range?.max !== undefined) n = n.max(range.max);
       f = n;
@@ -166,7 +187,7 @@ export function buildShortcuts(defs: ShortcutDef[]): Shortcut[] {
     }
     for (const name of def.params) {
       const p = resolveParam(op, name);
-      if (def.bounds?.[name] && p.type !== "integer") throw new Error(`shortcut ${def.name}: bounds on ${name}, which is not an integer`);
+      if (def.bounds?.[name] && p.type !== "integer" && p.type !== "number") throw new Error(`shortcut ${def.name}: bounds on ${name}, which is not a number`);
       shape[name] = field(p, def.describe?.[name] ?? p.description, !p.required || oneOf.includes(name), def.bounds?.[name]);
     }
     const kind = op.method === "GET" ? "read" : "write";

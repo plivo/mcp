@@ -16,6 +16,7 @@ const AREAS: readonly { name: string; modules: readonly string[] }[] = [
   { name: "SIP trunks", modules: ["sip.read", "sip.write"] },
   { name: "Verify", modules: ["verify.read", "verify.write"] },
   { name: "AI agents", modules: ["agent.read", "agent.write"] },
+  { name: "Text-to-speech", modules: ["tts.read", "tts.write"] },
 ];
 const READ_ONLY = "Read-only";
 const READ_WRITE = "Read and write";
@@ -39,6 +40,8 @@ const NAMES: Readonly<Record<string, string>> = {
   "verify.write": "start and check Verify sessions",
   "agent.read": "view AI agents",
   "agent.write": "change AI agents",
+  "tts.read": "view text-to-speech voices, lexicons and usage",
+  "tts.write": "turn text into speech and manage pronunciation lexicons",
 };
 
 const areaOf = (module: string) => AREAS.find((a) => a.modules.includes(module));

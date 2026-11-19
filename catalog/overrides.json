@@ -9,7 +9,9 @@
   ],
   "cli_ignore": {
     "buddy.go:runSupport": "Plivo AI support chat, not the REST API",
-    "login_browser.go:redeemAndPersist": "CLI login token exchange, not the REST API"
+    "login_browser.go:redeemAndPersist": "CLI login token exchange, not the REST API",
+    "org_session.go:callSession": "CLI organization list/switch service, not the REST API; the MCP has its own list_organizations and switch_organization",
+    "org_session.go:revokeSession": "CLI sign-out token revoke, not the REST API"
   },
   "ops": {
     "POST /PhoneNumber/Compliance/": {
@@ -27,6 +29,7 @@
     "DELETE /Call/{call_uuid}/Speak/": { "destructive": false, "reason": "stops text-to-speech on a live call; nothing is deleted" },
     "DELETE /Conference/{conference_name}/Member/{member_id}/Play/": { "destructive": false, "reason": "stops audio playing to a member; nothing is deleted" },
     "DELETE /Conference/{conference_name}/Member/{member_id}/Speak/": { "destructive": false, "reason": "stops text-to-speech to a member; nothing is deleted" },
+    "POST /TTS/": {"description": "Convert text to speech. Through this server the audio comes back as an attached mp3 clip, text is limited to 1,000 characters and output_format is not accepted.", "reason": "this server returns mp3 only and at most 1,000 characters, so a clip always fits in one reply"},
     "GET /NumberPool/{number_pool_uuid}/Number/": {"include": true, "description": "List the numbers in a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.", "reason": "Powerpack numbers: the CLI's /Powerpack/{uuid}/Number/ path returns 404 (checked 2026-11-13); this is the documented path the SDKs call"},
     "POST /NumberPool/{number_pool_uuid}/Number/{number}/": {"include": true, "description": "Add an SMS- or MMS-enabled number to a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.", "reason": "Powerpack numbers: the CLI's /Powerpack/{uuid}/Number/ path returns 404 (checked 2026-11-13); this is the documented path the SDKs call"},
     "DELETE /NumberPool/{number_pool_uuid}/Number/{number}/": {"include": true, "description": "Remove a number from a Powerpack's number pool. number_pool_uuid is the last segment of the Powerpack's number_pool path, from Retrieve a Powerpack.", "reason": "Powerpack numbers: the CLI's /Powerpack/{uuid}/Number/ path returns 404 (checked 2026-11-13); this is the documented path the SDKs call"}
